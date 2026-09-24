@@ -24,15 +24,18 @@
       field += c; i++;
     }
     if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    rows.forEach((r, i) => { r._n = i + 1; });   // line number in the file (for messages)
     return rows.filter(r => r.some(v => String(v).trim() !== ''));
   }
 
   function rowsToObjects(rows) {
     if (!rows.length) return { headers: [], records: [] };
     const headers = rows[0].map(h => String(h == null ? '' : h).trim());
-    const records = rows.slice(1).map(r => {
+    const records = rows.slice(1).map((r, i) => {
+      if (!r._n) r._n = i + 2;
       const o = {};
       headers.forEach((h, idx) => { o[h] = r[idx] == null ? '' : r[idx]; });
+      Object.defineProperty(o, '__row', { value: r._n || null, enumerable: false });
       return o;
     });
     return { headers, records };
@@ -169,23 +172,31 @@
     const warnings = [];
     const byId = new Map();
     let skipped = 0;
+    const skippedRows = [], mergedRows = [], dupRows = [];
 
     if (type === 'unknown') {
       return { type, orders: [], skipped: records.length, warnings: ['This file does not look like an Etsy orders file.'] };
     }
 
     records.forEach((r, idx) => {
+      const rowNo = r.__row || idx + 2;
       let orderId = cleanId(get(r, ['Order ID', 'Order Number', 'Order #', 'Receipt ID']));
       const txId = cleanId(get(r, ['Transaction ID']));
       if (!orderId && txId) orderId = 'T' + txId;
-      if (!orderId) { skipped++; return; }
+      if (!orderId) { skipped++; skippedRows.push({ row: rowNo, reason: 'no order number' }); return; }
+      if (/e\+?\d+$/i.test(orderId)) warnings.push('Row ' + rowNo + ': order number "' + orderId + '" was changed by Excel (scientific format). Download the file from Etsy again and upload it without opening it in Excel.');
 
       let o = byId.get(orderId);
+      if (o && (type === 'items' || type === 'combined') && txId && o.items.some(it => it.transactionId === txId)) {
+        dupRows.push({ row: rowNo, orderId, firstRow: o._rows[0] }); return;   // exact same item row twice
+      }
+      if (o) mergedRows.push({ row: rowNo, orderId, firstRow: o._rows[0] });
       if (!o) {
         o = { orderId, date: '', buyerName: '', buyerUser: '', phone: '', city: '', state: '', country: '',
-              currency: '', total: 0, orderTotalFromFile: 0, status: '', items: [] };
+              currency: '', total: 0, orderTotalFromFile: 0, status: '', items: [], _rows: [] };
         byId.set(orderId, o);
       }
+      o._rows.push(rowNo);
       const setIf = (key, val) => { val = clean(val); if (val && !o[key]) o[key] = val; };
 
       const date = toISODate(get(r, ['Sale Date', 'Order Date', 'Date Paid', 'Date']));
@@ -245,13 +256,12 @@
     byId.forEach(o => {
       const m = moneyFor(o);
       Object.assign(o, m);
-      delete o._itemsMoney; delete o._orderMoney;
+      delete o._itemsMoney; delete o._orderMoney; delete o._rows;
       orders.push(o);
     });
     if (type === 'orders') warnings.push('This is the "Orders" file. It has no listing names. For listing names, also upload the "Order Items" file.');
     if (!phoneHeader) warnings.push('No phone column in this file. Phone numbers will stay empty.');
-    if (skipped) warnings.push(skipped + ' row(s) had no order number and were skipped.');
-    return { type, orders, skipped, warnings };
+    return { type, orders, skipped, warnings, rows: records.length, skippedRows, mergedRows, dupRows };
   }
 
   function guessShop(filename, shops) {
