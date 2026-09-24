@@ -35,10 +35,12 @@ Open this link in Chrome on any computer. Bookmark it. Nothing to install.
 
 Do this for each shop.
 
+**Monthly statement (for exact fees and tax):** Etsy **Shop Manager** → **Finances** → **Payment account** → open the **monthly statement** → **Download CSV**. One file per shop per month.
+
 ### 2. Upload
 1. In the app click **Upload**
 2. Click the shop name
-3. Drop the file (you can drop "Order Items" and "Orders" files together)
+3. Drop the file (you can drop the orders file and the monthly statement together)
 4. Check the numbers → click **Save**
 
 Uploading the same file again is safe. Orders are updated, not doubled. Your notes and PDFs stay.
@@ -70,7 +72,16 @@ The app does **not** use the total from the CSV. For each order:
 2. Changed to **₹** using the ECB exchange rate of the order date (free, from frankfurter.dev). ₹ orders stay as they are.
 3. Minus **transaction fee**: 6.5% of the sales amount
 4. Minus **payment processing**: buyer in India 3% + ₹10, other countries 5% + ₹25 (charged on what the buyer paid, tax included)
-5. What is left = **Net revenue**. Dashboard, shops, clients and listings all use this.
+5. Minus **regulatory operating fee** if you set a % for it (0 by default)
+6. What is left = **Net revenue**. Dashboard, shops, clients and listings all use this.
+
+### With a monthly statement: exact numbers
+When you upload the Etsy monthly statement, orders in it use **Etsy's real numbers** instead of the steps above: sale, tax paid by buyer (Etsy keeps it), transaction fee, processing fee, regulatory operating fee, refunds and other order fees. Net revenue = the sum of Etsy's "Net" column for that order, in ₹. The order page shows **Actual (from statement)** or **Estimated**.
+
+- Orders not in any statement stay **Estimated** (the steps above).
+- Statement lines for orders you have not uploaded yet are kept and added when you upload that orders file.
+- Uploading the same statement again is safe - lines already saved are skipped.
+- **Backup & Settings → Monthly statements uploaded** lists every shop and month you have uploaded.
 
 Open any order to see each step. The fee numbers can be changed in **Backup & Settings → Revenue rules**.
 If an order has no country (only the Order Items file was uploaded), it is counted as "other countries".
