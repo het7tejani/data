@@ -213,6 +213,12 @@
       delete doc.pdfs[id]; deletedPdfs.add(id); schedule();
     },
 
+    async deleteOrder(key) {
+      const pdfs = Object.values(doc.pdfs).filter(p => p.orderKey === key);
+      for (const p of pdfs) await DB.deletePdf(p.id);
+      delete doc.orders[key]; dirtyOrders.add(key); schedule();
+    },
+
     getMeta: async (k, dflt) => k === 'shops' ? (doc.shops ? doc.shops.slice() : dflt) : (k in doc.meta ? doc.meta[k] : dflt),
     setMeta: async (k, v) => { if (k === 'shops') doc.shops = v; else doc.meta[k] = v; dirtyMeta = true; schedule(); },
 
