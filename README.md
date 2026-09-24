@@ -13,7 +13,7 @@ One simple place for the orders of all 5 Etsy shops:
 
 ## Open the app
 
-Open your **Vercel** link for this project (Vercel dashboard → this project → **Visit**).
+**https://data-dun-beta.vercel.app/**
 
 Open this link in Chrome on any computer. Bookmark it. Nothing to install.
 
