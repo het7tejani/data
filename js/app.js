@@ -31,7 +31,7 @@
   const inrOr = (o, amt, dash) => { const v = toINR(o, amt); return v == null ? (dash || '-') : money(v, 'INR'); };
   const itemNet = (o, it) => { const base = o.subtotal || (o.items || []).reduce((s, x) => s + (x.total || 0), 0); return base ? net(o) * (it.total || 0) / base : 0; };
   const MONEY_FIELDS = ['subtotal', 'discount', 'shipping', 'shipDiscount', 'tax', 'orderTotal', 'gross', 'total', 'moneySrc'];
-  const stripRev = o => { const c = Object.assign({}, o); delete c.rev; return c; };
+  const stripRev = o => { const c = Object.assign({}, o); delete c.rev; delete c._renew; return c; };
 
   // ---------- data ----------
   async function load() {
@@ -46,12 +46,68 @@
     S.statements = await DB.getMeta('statements', {});
     S.stmtPending = await DB.getMeta('stmtPending', {});
     try { if (await Revenue.ensureFx(S.orders)) await DB.putOrders(S.orders.filter(o => o.fxRate || (o.stmt && o.stmt.fx)).map(stripRev)); } catch (e) { console.warn(e); }
+    assignStatementLines();
     S.orders.forEach(o => { o.rev = Revenue.compute(o, S.fees); });
     S.pendingFx = S.orders.filter(o => !isPrimary(o)).length;
     S.orders.forEach(o => { if (o.shop && S.shops.indexOf(o.shop) < 0) S.shops.push(o.shop); });
     renderSidebarFoot();
   }
   const cur = n => money(n, S.currency);
+
+  // Statement lines without an order number: auto-renew fees are matched to the sale by listing ID (charged on every sale);
+  // the rest (new listing fees, Etsy Ads, other charges) are shop costs and never touch order revenue.
+  function assignStatementLines() {
+    S.orders.forEach(o => { delete o._renew; });
+    const byListing = {};
+    S.orders.forEach(o => (o.items || []).forEach(it => {
+      if (!it.listingId) return;
+      const k = o.shop + '|' + it.listingId;
+      (byListing[k] = byListing[k] || []).push({ o, qty: it.qty || 1, used: 0 });
+    }));
+    Object.values(byListing).forEach(a => a.sort((x, y) => (y.o.date || '').localeCompare(x.o.date || '')));
+    const plus2 = d => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + 2); return t.toISOString().slice(0, 10); };
+    S.shopCostLines = [];
+    Object.values(S.statements || {}).forEach(rec => (rec.otherKeys || []).forEach(k => {
+      const l = ST.lineFromKey(k); if (!l) return;
+      const g = ST.costGroup(l); if (!g) return;
+      if (g === 'renew' && l.listingId) {
+        const lim = l.date ? plus2(l.date) : '9999';
+        const c = (byListing[rec.shop + '|' + l.listingId] || []).find(x => x.used < x.qty && (x.o.date || '') <= lim);
+        if (c) { c.used++; (c.o._renew = c.o._renew || []).push(l); return; }
+      }
+      S.shopCostLines.push(Object.assign({ shop: rec.shop, group: g === 'renew' ? 'other' : g }, l));
+    }));
+  }
+  // shop cost line -> INR (rate: average of that shop's orders in the same currency and month)
+  function costINR(l) {
+    const c = (l.currency || 'INR').toUpperCase();
+    if (c === 'INR') return -l.net;
+    const m = (l.date || '').slice(0, 7);
+    const same = S.orders.filter(o => (o.currency || '').toUpperCase() === c && o.fxRate);
+    const pool = same.filter(o => (o.date || '').slice(0, 7) === m);
+    const use = pool.length ? pool : same;
+    if (!use.length) return null;
+    return -l.net * use.reduce((s, o) => s + o.fxRate, 0) / use.length;
+  }
+  function shopCostsCard(shop, from, to, revenue) {
+    const lines = (S.shopCostLines || []).filter(l => (shop === 'all' || l.shop === shop) && (l.date || '') >= from && (l.date || '0000') <= to);
+    const head = '<div class="card mt"><div class="card-head"><div><h3>Shop costs</h3><div class="sub">From uploaded monthly statements. Not part of any order: new listing fees, Etsy Ads, other charges.</div></div></div><div class="card-body">';
+    if (!Object.keys(S.statements || {}).length) return head + '<div class="muted small">Upload a monthly statement (Upload page) to see shop costs.</div></div></div>';
+    const g = {}; let total = 0, missing = 0;
+    lines.forEach(l => {
+      const v = costINR(l); if (v == null) { missing++; return; }
+      const k = (l.date || '').slice(0, 7) + '|' + l.shop;
+      const r = g[k] = g[k] || { month: (l.date || '').slice(0, 7), shop: l.shop, listing: 0, ads: 0, other: 0, total: 0 };
+      r[l.group] += v; r.total += v; total += v;
+    });
+    const rows = Object.values(g).sort((a, b) => b.month.localeCompare(a.month) || a.shop.localeCompare(b.shop));
+    return head + (rows.length ? '<div class="table-wrap"><table class="table"><thead><tr><th>Month</th><th>Shop</th><th class="num">New listing fees</th><th class="num">Etsy Ads</th><th class="num">Other</th><th class="num">Total</th></tr></thead><tbody>' +
+      rows.map(r => '<tr><td class="cell-strong">' + esc(monthLabel(r.month)) + '</td><td><span class="row" style="gap:6px">' + shopDot(r.shop) + esc(r.shop) + '</span></td><td class="num">' + cur(r.listing) + '</td><td class="num">' + cur(r.ads) + '</td><td class="num">' + cur(r.other) + '</td><td class="num cell-strong">' + cur(r.total) + '</td></tr>').join('') +
+      '</tbody></table></div>' : '<div class="muted small">No shop costs in this period.</div>') +
+      '<div class="row between wrap mt" style="gap:12px"><span class="muted">Net revenue ' + cur(revenue) + ' - shop costs ' + cur(total) + '</span><span class="cell-strong" style="font-size:16px">Net after shop costs: ' + cur(revenue - total) + '</span></div>' +
+      (missing ? '<div class="help small">' + int(missing) + ' line(s) not counted: no exchange rate for their currency yet.</div>' : '') +
+      '<div class="help small">Only months with an uploaded statement have shop costs.</div></div></div>';
+  }
   const isActual = o => !!(o.rev && o.rev.actual && !o.rev.pending);
   const srcBadge = o => isActual(o) ? '<span class="badge badge-green">Actual (from statement)</span>' : '<span class="badge badge-amber">Estimated</span>';
 
@@ -148,6 +204,7 @@
         kpi('repeat', 'Repeat clients', int(repeat.length), clients.size ? Math.round(repeat.length / clients.size * 100) + '% came back' : '') +
         kpi('file', 'PDF missing', int(noPdf), noPdf ? '<a href="#/orders" data-nopdf="1" style="text-decoration:underline">See orders</a>' : 'All orders have PDF') +
       '</div>' +
+      shopCostsCard(f.shop, from, to, revenue) +
       '<div class="grid two mt">' +
         '<div class="card"><div class="card-head"><div><h3>Sales by month</h3><div class="sub">Net revenue in ₹ (after discount, tax &amp; Etsy fees) · hover a bar</div></div></div><div class="card-body"><div class="chart" id="monthChart"></div></div></div>' +
         '<div class="card"><div class="card-head"><h3>Sales by shop</h3></div><div class="card-body"><ul class="rank-list">' +
@@ -289,7 +346,7 @@
         'Shop': o.shop, 'Order #': o.orderId, 'Date': o.date, 'Client': o.buyerName, 'Username': o.buyerUser || '',
         'Listing': it.title, 'Qty': it.qty, 'Item amount': it.total, 'Currency': o.currency || '',
         'Order items': o.subtotal, 'Discount': o.discount, 'Postage': (o.shipping || 0) - (o.shipDiscount || 0), 'Tax (not revenue)': o.tax, 'Buyer paid': o.orderTotal,
-        'Rate to INR': rv.rate || '', 'Sales INR': rv.grossINR, 'Transaction fee INR': rv.txFee, 'Processing fee INR': rv.procFee, 'Regulatory fee INR': rv.regFee || 0, 'Other fees INR': rv.otherFee || 0, 'Net revenue INR': rv.net,
+        'Rate to INR': rv.rate || '', 'Sales INR': rv.grossINR, 'Transaction fee INR': rv.txFee, 'Processing fee INR': rv.procFee, 'Regulatory fee INR': rv.regFee || 0, 'Other fees INR': rv.otherFee || 0, 'Listing fee INR': rv.listFee || 0, 'Net revenue INR': rv.net,
         'Revenue source': rv.actual ? 'Actual (statement)' : 'Estimated',
         'Domestic': rv.domestic ? 'Yes' : 'No', 'Item net INR': Math.round(itemNet(o, it) * 100) / 100,
         'Phone': o.phone || '', 'City': o.city || '', 'State': o.state || '', 'Country': o.country || '',
@@ -396,6 +453,7 @@
       line('Transaction fee ' + S.fees.transactionPct + '%', '- ' + cur(r.txFee)) +
       line('Payment processing (' + (r.domestic ? 'India ' + S.fees.domesticPct + '% + ₹' + S.fees.domesticFixed : 'international ' + S.fees.internationalPct + '% + ₹' + S.fees.internationalFixed) + ')', '- ' + cur(r.procFee)) +
       (r.regFee ? line('Regulatory operating fee ' + S.fees.regulatoryPct + '%', '- ' + cur(r.regFee)) : '') +
+      (r.listFee ? line('Listing fee (auto-renew)', '- ' + cur(r.listFee)) : '') +
       line('Net revenue', cur(r.net), 'cell-strong') +
       '<div class="help small">Fees are worked out with your revenue rules. Upload the Etsy monthly statement for this month to get the exact numbers.</div>';
     return h;
@@ -414,6 +472,7 @@
       line('Payment processing fee', v(r.procFee, 'proc', true)) +
       (r.regFee ? line('Regulatory operating fee', v(r.regFee, 'reg', true)) : '') +
       (r.otherFee ? line('Other Etsy fees', v(r.otherFee, 'other', r.otherFee > 0)) : '') +
+      (r.listFee ? line('Listing fee (auto-renew)' + (r.listFeeSrc === 'rule' ? ' <span class="muted small">(rule - not in statement)</span>' : ''), r.listFeeSrc === 'rule' ? '- ' + cur(r.listFee) : v(r.listFee, 'renew', true)) : '') +
       line('Net revenue', cur(r.net), 'cell-strong') +
       '<div class="help small">From ' + int(r.lineCount) + ' lines in the Etsy monthly statement' + (periods ? ' (' + esc(periods) + ')' : '') + '.</div>';
   }
@@ -742,7 +801,7 @@
         if (clean.moneySrc === 'orders' || old.moneySrc !== 'orders') MONEY_FIELDS.forEach(k => { m[k] = clean[k]; });
         if (clean.fxRate && (m.currency !== old.currency || m.date !== old.date || !old.fxRate)) { m.fxRate = clean.fxRate; m.fxSource = clean.fxSource; }
         else if (m.currency !== old.currency || m.date !== old.date) { delete m.fxRate; delete m.fxSource; }
-        delete m.rev; delete m._totalSrc;
+        delete m.rev; delete m._totalSrc; delete m._renew;
         m.updatedAt = now; out.push(m); updated++;
       } else {
         clean.key = key; clean.shop = shop; clean.note = ''; clean.pdfCount = 0; clean.importedAt = now;
@@ -912,11 +971,13 @@
           '<div class="help mt small">The backup file has orders, notes and the PDF list. The PDF files themselves stay in the GitHub repo (pdfs folder). Last backup: ' + (S.lastBackup ? date(new Date(S.lastBackup).toISOString().slice(0, 10)) : 'never') + '</div>' +
         '</div></div>' +
       '</div>' +
-      '<div class="card mt"><div class="card-head"><div><h3>Revenue rules (Etsy fees)</h3><div class="sub">Used for orders without a monthly statement ("Estimated"). Net revenue = (items - discount + postage) in ₹ - transaction fee - payment processing - regulatory fee. Tax paid by buyer is not counted. Orders with a statement use Etsy\'s exact numbers.</div></div></div><div class="card-body">' +
+      '<div class="card mt"><div class="card-head"><div><h3>Revenue rules (Etsy fees)</h3><div class="sub">Used for orders without a monthly statement ("Estimated"). Net revenue = (items - discount + postage) in ₹ - transaction fee - payment processing - regulatory fee - listing fee (auto-renew). Tax paid by buyer is not counted. Orders with a statement use Etsy\'s exact numbers.</div></div></div><div class="card-body">' +
         '<div class="grid three">' +
           feeInput('transactionPct', 'Transaction fee %', 'Of order total without tax, incl. postage') +
           feeInput('domesticPct', 'Processing % - India buyers', '') + feeInput('domesticFixed', 'Processing fixed ₹ - India buyers', '') +
           feeInput('internationalPct', 'Processing % - other countries', '') + feeInput('internationalFixed', 'Processing fixed ₹ - other countries', '') +
+          feeInput('listingFeeUSD', 'Listing fee (auto-renew) $ - USD orders', 'Charged on every sale. Changed to ₹ at the order-date rate') +
+          feeInput('listingFeeINR', 'Listing fee (auto-renew) ₹ - INR orders', 'Same fee for ₹ shops (and other currencies)') +
           feeInput('regulatoryPct', 'Regulatory operating fee %', 'Of order total without tax. Etsy adds it on some orders (e.g. $0.01). 0 = not counted') +
           '<div><label class="label">Your country</label><input class="input" data-fee="homeCountry" style="width:100%" value="' + esc(S.fees.homeCountry) + '"><div class="help small" style="margin-top:4px">Buyers from here are "domestic"</div></div>' +
         '</div>' +
