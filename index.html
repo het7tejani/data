@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Order Book - Etsy Orders</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23111'/><path d='M9 11h14M9 16h14M9 21h9' stroke='white' stroke-width='2.5' stroke-linecap='round'/></svg>">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg viewBox="0 0 32 32" width="28" height="28"><rect width="32" height="32" rx="8" fill="#111"/><path d="M9 11h14M9 16h14M9 21h9" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>
+        </div>
+        <div>
+          <div class="brand-name">Order Book</div>
+          <div class="brand-sub">Etsy shops</div>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <a href="#/dashboard" data-route="dashboard"><span class="ico" data-icon="home"></span>Dashboard</a>
+        <a href="#/orders" data-route="orders"><span class="ico" data-icon="list"></span>Orders</a>
+        <a href="#/clients" data-route="clients"><span class="ico" data-icon="users"></span>Clients</a>
+        <a href="#/upload" data-route="upload"><span class="ico" data-icon="upload"></span>Upload</a>
+        <div class="nav-sep"></div>
+        <a href="#/settings" data-route="settings"><span class="ico" data-icon="settings"></span>Backup &amp; Settings</a>
+      </nav>
+      <div class="sidebar-foot" id="sidebarFoot"></div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menu"><span class="ico" data-icon="menu"></span></button>
+        <h1 id="pageTitle">Dashboard</h1>
+        <div class="topbar-right">
+          <div class="search-wrap">
+            <span class="ico" data-icon="search"></span>
+            <input id="globalSearch" type="search" placeholder="Search client, listing, order #" autocomplete="off">
+          </div>
+          <a class="btn btn-primary" href="#/upload"><span class="ico" data-icon="upload"></span><span class="hide-sm">Upload</span></a>
+        </div>
+      </header>
+      <main class="content" id="view"></main>
+    </div>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+  <div class="toasts" id="toasts"></div>
+
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="js/parser.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
