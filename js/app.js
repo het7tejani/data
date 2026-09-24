@@ -20,7 +20,11 @@
   const clientKey = o => P.norm(o.buyerName) || P.norm(o.buyerUser) || ('order' + o.orderId);
   const place = o => [o.city, o.country].filter(Boolean).join(', ');
   const firstTitle = o => o.items && o.items.length ? o.items[0].title : (o.sku ? 'SKU ' + o.sku : '(listing name not in file)');
-  const isPrimary = o => !o.currency || o.currency === S.currency;
+  const isPrimary = o => !!(o.rev && !o.rev.pending);
+  const net = o => isPrimary(o) ? o.rev.net : 0;
+  const itemNet = (o, it) => { const base = o.subtotal || (o.items || []).reduce((s, x) => s + (x.total || 0), 0); return base ? net(o) * (it.total || 0) / base : 0; };
+  const MONEY_FIELDS = ['subtotal', 'discount', 'shipping', 'shipDiscount', 'tax', 'orderTotal', 'gross', 'total', 'moneySrc'];
+  const stripRev = o => { const c = Object.assign({}, o); delete c.rev; return c; };
 
   // ---------- data ----------
   async function load() {
@@ -30,7 +34,13 @@
     const counts = {};
     S.orders.forEach(o => { if (o.currency) counts[o.currency] = (counts[o.currency] || 0) + 1; });
     const top = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
-    S.currency = top || 'USD';
+    S.currency = 'INR'; S.shopCurrency = top || 'USD';
+    S.fees = Object.assign({}, Revenue.DEFAULT_FEES, await DB.getMeta('fees', {}));
+    if (S.orders.some(o => o.currency && o.currency.toUpperCase() !== 'INR' && !o.fxRate)) {
+      try { if (await Revenue.ensureFx(S.orders)) await DB.putOrders(S.orders.filter(o => o.fxRate).map(stripRev)); } catch (e) { console.warn(e); }
+    }
+    S.orders.forEach(o => { o.rev = Revenue.compute(o, S.fees); });
+    S.pendingFx = S.orders.filter(o => !isPrimary(o)).length;
     S.orders.forEach(o => { if (o.shop && S.shops.indexOf(o.shop) < 0) S.shops.push(o.shop); });
     renderSidebarFoot();
   }
@@ -89,24 +99,25 @@
     const [from, to] = periodRange(f.period);
     const list = S.orders.filter(o => (f.shop === 'all' || o.shop === f.shop) && (o.date || '') >= from && (o.date || '0000') <= to);
     const money_ = list.filter(isPrimary);
-    const revenue = money_.reduce((s, o) => s + (o.total || 0), 0);
+    const revenue = money_.reduce((s, o) => s + net(o), 0);
+    const grossINR = money_.reduce((s, o) => s + o.rev.grossINR, 0), feesINR = money_.reduce((s, o) => s + o.rev.fees, 0);
     const clients = new Map();
-    list.forEach(o => { const k = clientKey(o); const c = clients.get(k) || { name: o.buyerName || o.buyerUser, n: 0, spent: 0, shops: new Set(), last: '' }; c.n++; if (isPrimary(o)) c.spent += o.total || 0; c.shops.add(o.shop); if ((o.date || '') > c.last) c.last = o.date; clients.set(k, c); });
+    list.forEach(o => { const k = clientKey(o); const c = clients.get(k) || { name: o.buyerName || o.buyerUser, n: 0, spent: 0, shops: new Set(), last: '' }; c.n++; c.spent += net(o); c.shops.add(o.shop); if ((o.date || '') > c.last) c.last = o.date; clients.set(k, c); });
     const repeat = [...clients.values()].filter(c => c.n > 1);
     const otherCur = list.length - money_.length;
 
     // monthly
     const byMonth = {};
-    money_.forEach(o => { if (!o.date) return; const k = o.date.slice(0, 7); byMonth[k] = byMonth[k] || { v: 0, n: 0 }; byMonth[k].v += o.total || 0; byMonth[k].n++; });
+    money_.forEach(o => { if (!o.date) return; const k = o.date.slice(0, 7); byMonth[k] = byMonth[k] || { v: 0, n: 0 }; byMonth[k].v += net(o); byMonth[k].n++; });
     const months = fillMonths(Object.keys(byMonth).sort(), f.period);
     // shops
     const byShop = {};
-    list.forEach(o => { byShop[o.shop] = byShop[o.shop] || { v: 0, n: 0 }; byShop[o.shop].n++; if (isPrimary(o)) byShop[o.shop].v += o.total || 0; });
+    list.forEach(o => { byShop[o.shop] = byShop[o.shop] || { v: 0, n: 0 }; byShop[o.shop].n++; byShop[o.shop].v += net(o); });
     const shopRows = Object.keys(byShop).sort((a, b) => byShop[b].v - byShop[a].v);
     const maxShop = Math.max(1, ...shopRows.map(s => byShop[s].v));
     // listings
     const byList = {};
-    list.forEach(o => (o.items || []).forEach(it => { const k = it.title; byList[k] = byList[k] || { n: 0, v: 0, shops: new Set() }; byList[k].n += it.qty || 1; if (isPrimary(o)) byList[k].v += it.total || 0; byList[k].shops.add(o.shop); }));
+    list.forEach(o => (o.items || []).forEach(it => { const k = it.title; byList[k] = byList[k] || { n: 0, v: 0, shops: new Set() }; byList[k].n += it.qty || 1; byList[k].v += itemNet(o, it); byList[k].shops.add(o.shop); }));
     const topList = Object.keys(byList).sort((a, b) => byList[b].n - byList[a].n || byList[b].v - byList[a].v).slice(0, 8);
     // countries
     const byCountry = {};
@@ -121,14 +132,14 @@
       '<div class="seg" id="periodSeg">' + [['all', 'All time'], ['month', 'This month'], ['3m', '3 months'], ['12m', '12 months'], ['year', 'This year'], ['lastyear', 'Last year']]
         .map(p => '<button data-p="' + p[0] + '" class="' + (f.period === p[0] ? 'active' : '') + '">' + p[1] + '</button>').join('') + '</div></div>' +
       '<div class="grid kpis">' +
-        kpi('money', 'Total sales', cur(revenue), otherCur ? otherCur + ' order(s) in other currency not added' : 'Order totals from Etsy') +
+        kpi('money', 'Net revenue', cur(revenue), otherCur ? otherCur + ' order(s) waiting for exchange rate' : 'Sales ' + cur(grossINR) + ' - Etsy fees ' + cur(feesINR)) +
         kpi('bag', 'Orders', int(list.length), list.length ? 'Avg ' + cur(money_.length ? revenue / money_.length : 0) + ' per order' : '') +
         kpi('users', 'Clients', int(clients.size), 'Unique buyers') +
         kpi('repeat', 'Repeat clients', int(repeat.length), clients.size ? Math.round(repeat.length / clients.size * 100) + '% came back' : '') +
         kpi('file', 'PDF missing', int(noPdf), noPdf ? '<a href="#/orders" data-nopdf="1" style="text-decoration:underline">See orders</a>' : 'All orders have PDF') +
       '</div>' +
       '<div class="grid two mt">' +
-        '<div class="card"><div class="card-head"><div><h3>Sales by month</h3><div class="sub">' + esc(S.currency) + ' · hover a bar for details</div></div></div><div class="card-body"><div class="chart" id="monthChart"></div></div></div>' +
+        '<div class="card"><div class="card-head"><div><h3>Sales by month</h3><div class="sub">Net revenue in ₹ (after discount, tax &amp; Etsy fees) · hover a bar</div></div></div><div class="card-body"><div class="chart" id="monthChart"></div></div></div>' +
         '<div class="card"><div class="card-head"><h3>Sales by shop</h3></div><div class="card-body"><ul class="rank-list">' +
           (shopRows.map(s => '<li><div class="rank-main"><div class="row between"><div class="rank-title row" style="gap:8px">' + shopDot(s) + esc(s) + '</div><div class="rank-val">' + cur(byShop[s].v) + '</div></div>' +
             '<div class="rank-sub">' + int(byShop[s].n) + ' orders</div><div class="bar-track"><div class="bar-fill" style="width:' + (byShop[s].v / maxShop * 100) + '%;background:' + shopColor(s) + '"></div></div></div></li>').join('') || '<li class="muted">No data</li>') +
@@ -179,6 +190,7 @@
   }
 
   function backupNotice() {
+    if (S.pendingFx) return '<div class="notice" style="margin-bottom:18px">' + ico('info') + '<div>' + S.pendingFx + ' order(s) are waiting for the exchange rate and are not in revenue yet. Reload the page with internet.</div></div>';
     if (DB.status() === 'offline') return '<div class="notice" style="margin-bottom:18px">' + ico('alert') + '<div>Could not reach GitHub. You are seeing the last saved copy. Check internet and reload.</div></div>';
     if (DB.status() === 'error') return '<div class="notice" style="margin-bottom:18px">' + ico('alert') + '<div>Last change was not saved to GitHub. Check internet, then click "Not saved - click to retry" at the bottom left.</div></div>';
     return '';
@@ -231,16 +243,16 @@
       const per = 50, pages = Math.max(1, Math.ceil(list.length / per));
       if (f.page > pages) f.page = pages;
       const rows = list.slice((f.page - 1) * per, f.page * per);
-      const total = list.filter(isPrimary).reduce((s, o) => s + (o.total || 0), 0);
+      const total = list.reduce((s, o) => s + net(o), 0);
       document.getElementById('ordCard').innerHTML =
-        '<div class="card-head"><h3>' + int(list.length) + ' orders</h3><span class="sub">Total ' + cur(total) + '</span></div>' +
-        (rows.length ? '<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th>Shop</th><th class="num">Amount</th><th>PDF</th><th>Note</th></tr></thead><tbody>' +
+        '<div class="card-head"><h3>' + int(list.length) + ' orders</h3><span class="sub">Net revenue ' + cur(total) + '</span></div>' +
+        (rows.length ? '<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th>Shop</th><th class="num">Net revenue</th><th>PDF</th><th>Note</th></tr></thead><tbody>' +
           rows.map(o => '<tr class="clickable" data-key="' + esc(o.key) + '">' +
             '<td class="muted" style="white-space:nowrap">' + date(o.date) + '</td>' +
             '<td><div class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</div><div class="cell-sub">' + esc(place(o) || '#' + o.orderId) + '</div></td>' +
             '<td><div class="cell-title" title="' + esc(firstTitle(o)) + '">' + esc(firstTitle(o)) + '</div>' + ((o.items || []).length > 1 ? '<div class="cell-sub">+' + (o.items.length - 1) + ' more</div>' : '') + '</td>' +
             '<td><span class="row" style="gap:6px;white-space:nowrap">' + shopDot(o.shop) + esc(o.shop) + '</span></td>' +
-            '<td class="num cell-strong">' + money(o.total, o.currency || S.currency) + '</td>' +
+            '<td class="num"><div class="cell-strong">' + (isPrimary(o) ? cur(net(o)) : '<span class="badge badge-amber">Rate pending</span>') + '</div><div class="cell-sub">Paid ' + money(o.orderTotal != null ? o.orderTotal : o.total, o.currency || S.shopCurrency) + '</div></td>' +
             '<td>' + (o.pdfCount ? '<span class="badge badge-green">' + ico('check') + 'Added</span>' : '<span class="badge badge-amber">Missing</span>') + '</td>' +
             '<td class="muted">' + (o.note ? '<span class="cell-title" style="max-width:160px;display:block">' + esc(o.note) + '</span>' : '-') + '</td></tr>').join('') +
           '</tbody></table></div>' +
@@ -261,10 +273,14 @@
   function exportOrders(list) {
     const rows = [];
     list.forEach(o => {
-      const items = o.items && o.items.length ? o.items : [{ title: firstTitle(o), qty: o.itemCount || '', total: o.total }];
+      const items = o.items && o.items.length ? o.items : [{ title: firstTitle(o), qty: o.itemCount || '', total: o.subtotal || o.total }];
+      const rv = o.rev || {};
       items.forEach(it => rows.push({
         'Shop': o.shop, 'Order #': o.orderId, 'Date': o.date, 'Client': o.buyerName, 'Username': o.buyerUser || '',
-        'Listing': it.title, 'Qty': it.qty, 'Item amount': it.total, 'Order total': o.total, 'Currency': o.currency || S.currency,
+        'Listing': it.title, 'Qty': it.qty, 'Item amount': it.total, 'Currency': o.currency || '',
+        'Order items': o.subtotal, 'Discount': o.discount, 'Postage': (o.shipping || 0) - (o.shipDiscount || 0), 'Tax (not revenue)': o.tax, 'Buyer paid': o.orderTotal,
+        'Rate to INR': rv.rate || '', 'Sales INR': rv.grossINR, 'Transaction fee INR': rv.txFee, 'Processing fee INR': rv.procFee, 'Net revenue INR': rv.net,
+        'Domestic': rv.domestic ? 'Yes' : 'No', 'Item net INR': Math.round(itemNet(o, it) * 100) / 100,
         'Phone': o.phone || '', 'City': o.city || '', 'State': o.state || '', 'Country': o.country || '',
         'PDFs': o.pdfCount || 0, 'Note': o.note || ''
       }));
@@ -281,6 +297,7 @@
     if (!o) return;
     const pdfs = await DB.pdfsForOrder(key);
     const others = S.orders.filter(x => clientKey(x) === clientKey(o) && x.key !== o.key).length;
+    const mem0 = S.orders.find(x => x.key === key) || Object.assign({}, o, { rev: Revenue.compute(o, S.fees) });
     const d = drawer.open(
       '<div class="drawer-head"><div style="flex:1;min-width:0"><div class="row" style="gap:8px;margin-bottom:4px"><span class="badge">' + shopDot(o.shop) + esc(o.shop) + '</span>' +
         (others ? '<span class="badge badge-violet">' + ico('repeat') + (others + 1) + ' orders from this client</span>' : '') + '</div>' +
@@ -288,12 +305,13 @@
         '<button class="icon-btn" data-close>' + ico('x') + '</button></div>' +
       '<div class="drawer-body">' +
         '<div class="kv">' +
-          '<div class="k">Amount</div><div class="cell-strong">' + money(o.total, o.currency || S.currency) + '</div>' +
+          '<div class="k">Net revenue</div><div class="cell-strong">' + (isPrimary(mem0) ? cur(net(mem0)) : 'Waiting for exchange rate') + '</div>' +
           '<div class="k">Username</div><div>' + esc(o.buyerUser || '-') + '</div>' +
           '<div class="k">From</div><div>' + esc([o.city, o.state, o.country].filter(Boolean).join(', ') || '-') + '</div>' +
           '<div class="k">Phone</div><div><input class="input" id="phoneIn" style="padding:5px 9px;width:100%" placeholder="Not in Etsy file - add if you have it" value="' + esc(o.phone || '') + '"></div>' +
           (o.status ? '<div class="k">Status</div><div>' + esc(o.status) + '</div>' : '') +
         '</div>' +
+        moneyBreakdown(o, mem0) +
         '<div class="section-title">Listing</div>' +
         ((o.items || []).length ? o.items.map(it => '<div class="item-row"><div style="min-width:0"><div class="cell-strong">' + esc(it.title) + '</div>' + (it.variations ? '<div class="cell-sub">' + esc(it.variations) + '</div>' : '') + '<div class="cell-sub">Qty ' + it.qty + '</div></div><div class="cell-strong" style="white-space:nowrap">' + money(it.total, o.currency || S.currency) + '</div></div>').join('')
           : '<div class="muted">Listing name not in this file. Upload the "Order Items" file for this shop.</div>') +
@@ -330,6 +348,24 @@
     };
     bindDrop(dz, fi, add);
     bindPdfRows(key);
+  }
+
+  function moneyBreakdown(o, m) {
+    const c = o.currency || S.shopCurrency, r = m.rev || {};
+    const line = (k, v, cls) => '<div class="item-row" style="padding:6px 0"><span class="' + (cls || 'muted') + '">' + k + '</span><span class="' + (cls || '') + '" style="white-space:nowrap">' + v + '</span></div>';
+    let h = '<div class="section-title">Money</div>' +
+      line('Items', money(o.subtotal != null ? o.subtotal : o.total, c)) +
+      (o.discount ? line('Discount', '- ' + money(o.discount, c)) : '') +
+      ((o.shipping || 0) - (o.shipDiscount || 0) ? line('Postage', money((o.shipping || 0) - (o.shipDiscount || 0), c)) : '') +
+      (o.tax ? line('Tax paid by buyer (not revenue)', money(o.tax, c)) : '') +
+      line('Buyer paid', money(o.orderTotal != null ? o.orderTotal : o.total, c));
+    if (r.pending) return h + '<div class="notice mt">' + ico('info') + '<div>Exchange rate not loaded yet. Open the app with internet and it fills in.</div></div>';
+    h += (c.toUpperCase() !== 'INR' ? line('Rate', '1 ' + esc(c) + ' = ₹' + r.rate.toFixed(2) + (o.fxSource ? ' (' + esc(o.fxSource) + ')' : '')) : '') +
+      line('Sales in ₹ (after discount, no tax)', cur(r.grossINR)) +
+      line('Transaction fee ' + S.fees.transactionPct + '%', '- ' + cur(r.txFee)) +
+      line('Payment processing (' + (r.domestic ? 'India ' + S.fees.domesticPct + '% + ₹' + S.fees.domesticFixed : 'international ' + S.fees.internationalPct + '% + ₹' + S.fees.internationalFixed) + ')', '- ' + cur(r.procFee)) +
+      line('Net revenue', cur(r.net), 'cell-strong');
+    return h;
   }
 
   function pdfRows(pdfs) {
@@ -388,7 +424,7 @@
     S.orders.forEach(o => {
       const k = clientKey(o);
       const c = map.get(k) || { key: k, name: '', user: '', orders: [], spent: 0, shops: new Set(), first: '9999', last: '', country: '', phone: '' };
-      c.orders.push(o); if (isPrimary(o)) c.spent += o.total || 0; c.shops.add(o.shop);
+      c.orders.push(o); c.spent += net(o); c.shops.add(o.shop);
       if (!c.name && o.buyerName) c.name = o.buyerName; if (!c.user && o.buyerUser) c.user = o.buyerUser;
       if (o.date && o.date < c.first) c.first = o.date; if ((o.date || '') > c.last) c.last = o.date;
       if (!c.country && o.country) c.country = o.country; if (!c.phone && o.phone) c.phone = o.phone;
@@ -435,7 +471,7 @@
         '<div class="card kpi"><div class="kpi-label">Total spent</div><div class="kpi-value">' + cur(c.spent) + '</div></div></div>' +
       '<div class="kv mt"><div class="k">First order</div><div>' + date(c.first === '9999' ? '' : c.first) + '</div><div class="k">Last order</div><div>' + date(c.last) + '</div><div class="k">Shops</div><div>' + [...c.shops].map(esc).join(', ') + '</div></div>' +
       '<div class="section-title">All orders</div>' +
-      orders.map(o => '<div class="file-row clickable" style="cursor:pointer" data-key="' + esc(o.key) + '"><div class="file-main"><div class="file-name">' + esc(firstTitle(o)) + '</div><div class="file-sub">' + date(o.date) + ' · ' + esc(o.shop) + ' · #' + esc(o.orderId) + '</div></div><div class="cell-strong">' + money(o.total, o.currency || S.currency) + '</div>' +
+      orders.map(o => '<div class="file-row clickable" style="cursor:pointer" data-key="' + esc(o.key) + '"><div class="file-main"><div class="file-name">' + esc(firstTitle(o)) + '</div><div class="file-sub">' + date(o.date) + ' · ' + esc(o.shop) + ' · #' + esc(o.orderId) + '</div></div><div class="cell-strong">' + (isPrimary(o) ? cur(net(o)) : '-') + '</div>' +
         (o.pdfCount ? '<span class="badge badge-green">PDF</span>' : '<span class="badge badge-amber">No PDF</span>') + '</div>').join('') +
       '</div>');
     hydrateIcons(d);
@@ -508,6 +544,9 @@
       o._src = r.type; const prev = merged.get(o.orderId); merged.set(o.orderId, prev ? mergeOrder(prev, o) : o);
     }));
     const incoming = [...merged.values()];
+    let fxError = '';
+    try { await Revenue.ensureFx(incoming); } catch (e) { fxError = 'Could not load exchange rates (' + e.message + '). Orders will be saved; revenue fills in when the app is online.'; }
+    incoming.forEach(o => { o.rev = Revenue.compute(o, S.fees); });
     const existing = new Set(S.orders.map(o => o.key));
     const keys = incoming.map(o => DB.orderKey(u.shop, o.orderId));
     const warnings = [...new Set(good.flatMap(r => r.warnings))];
@@ -515,6 +554,9 @@
       for (let i = warnings.length - 1; i >= 0; i--) if (/no listing names/.test(warnings[i])) warnings.splice(i, 1);
     }
     const otherShop = files.map(f => P.guessShop(f.name, S.shops)).find(g => g && g !== u.shop);
+    if (fxError) warnings.unshift(fxError);
+    const noCountry = incoming.filter(o => !o.country).length;
+    if (noCountry) warnings.push(noCountry + ' order(s) have no country in the file, so they are counted as international (' + S.fees.internationalPct + '% + ₹' + S.fees.internationalFixed + '). Upload the "Orders" file too - it has the buyer country.');
     if (otherShop) warnings.unshift('The file name says "' + otherShop + '" but you chose "' + u.shop + '". Please check the shop.');
     u.parsed = {
       files: good.map(r => r.file + ' (' + ({ items: 'Order Items', orders: 'Orders', combined: 'Orders + Items' })[r.type] + ')'),
@@ -529,18 +571,17 @@
       if (b[k] && (!out[k] || (k === 'date' && b[k] < out[k]))) out[k] = b[k];
     });
     if (b.items && b.items.length) out.items = b.items;
-    if (b._src === 'orders' || b._src === 'combined') { out.total = b.total; out._totalSrc = 'orders'; }
-    else if (!out._totalSrc || out._totalSrc !== 'orders') { out.total = b.total || out.total; }
-    if (b._src === 'orders' || b._src === 'combined') out._totalSrc = 'orders';
-    if (a._src === 'orders' || a._src === 'combined') out._totalSrc = 'orders';
+    if (b.moneySrc === 'orders' || a.moneySrc !== 'orders') MONEY_FIELDS.forEach(k => { out[k] = b[k]; });
     return out;
   }
 
   function reviewImport(box) {
     const u = S.up, p = u.parsed;
     const dates = p.orders.map(o => o.date).filter(Boolean).sort();
-    const total = p.orders.reduce((s, o) => s + (o.total || 0), 0);
-    const curr = (p.orders.find(o => o.currency) || {}).currency || S.currency;
+    const total = p.orders.reduce((s, o) => s + (o.orderTotal || 0), 0);
+    const curr = (p.orders.find(o => o.currency) || {}).currency || S.shopCurrency;
+    const netTotal = p.orders.reduce((s, o) => s + (o.rev && !o.rev.pending ? o.rev.net : 0), 0);
+    const discTotal = p.orders.reduce((s, o) => s + (o.discount || 0), 0);
     const withPhone = p.orders.filter(o => o.phone).length;
     const sample = p.orders.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 8);
     box.innerHTML = '<div class="card card-pad">' + stepper(3) +
@@ -549,13 +590,14 @@
         '<div class="s"><div class="s-n">' + int(p.orders.length) + '</div><div class="s-l">Orders found</div></div>' +
         '<div class="s"><div class="s-n" style="color:var(--green)">' + int(p.newCount) + '</div><div class="s-l">New</div></div>' +
         '<div class="s"><div class="s-n">' + int(p.updCount) + '</div><div class="s-l">Already saved (will update)</div></div>' +
-        '<div class="s"><div class="s-n">' + money(total, curr) + '</div><div class="s-l">Total</div></div>' +
+        '<div class="s"><div class="s-n">' + money(total, curr) + '</div><div class="s-l">Buyers paid' + (discTotal ? ' (discount ' + money(discTotal, curr) + ')' : '') + '</div></div>' +
+        '<div class="s"><div class="s-n" style="color:var(--green)">' + cur(netTotal) + '</div><div class="s-l">Net revenue (₹, after fees)</div></div>' +
         '<div class="s"><div class="s-n" style="font-size:16px;padding-top:5px">' + (dates.length ? date(dates[0]) + ' - ' + date(dates[dates.length - 1]) : '-') + '</div><div class="s-l">Dates</div></div>' +
         '<div class="s"><div class="s-n">' + int(withPhone) + '</div><div class="s-l">With phone</div></div>' +
       '</div>' +
       (p.warnings.length ? '<div class="mt-lg">' + p.warnings.map(w => '<div class="notice" style="margin-top:8px">' + ico('info') + '<div>' + esc(w) + '</div></div>').join('') + '</div>' : '') +
-      '<div class="card mt-lg" style="box-shadow:none"><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th class="num">Amount</th></tr></thead><tbody>' +
-        sample.map(o => '<tr><td class="muted" style="white-space:nowrap">' + date(o.date) + '</td><td class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</td><td><div class="cell-title">' + esc(firstTitle(o)) + '</div></td><td class="num">' + money(o.total, o.currency || curr) + '</td></tr>').join('') +
+      '<div class="card mt-lg" style="box-shadow:none"><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th class="num">Paid</th><th class="num">Net ₹</th></tr></thead><tbody>' +
+        sample.map(o => '<tr><td class="muted" style="white-space:nowrap">' + date(o.date) + '</td><td class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</td><td><div class="cell-title">' + esc(firstTitle(o)) + '</div></td><td class="num">' + money(o.orderTotal, o.currency || curr) + '</td><td class="num cell-strong">' + (o.rev && !o.rev.pending ? cur(o.rev.net) : '-') + '</td></tr>').join('') +
       '</tbody></table></div>' + (p.orders.length > sample.length ? '<div class="pager">+ ' + int(p.orders.length - sample.length) + ' more orders</div>' : '') + '</div>' +
       '<div class="row mt-lg" style="justify-content:flex-end"><button class="btn" id="impCancel">Cancel</button><button class="btn btn-primary btn-lg" id="impSave">' + ico('check') + 'Save ' + int(p.orders.length) + ' orders</button></div>' +
       '</div>';
@@ -582,18 +624,19 @@
     incoming.forEach(n => {
       const key = DB.orderKey(shop, n.orderId);
       const old = byKey.get(key);
-      const clean = Object.assign({}, n); delete clean._src;
+      const clean = Object.assign({}, n); delete clean._src; delete clean.rev;
       if (old) {
         const m = Object.assign({}, old);
         ['date', 'buyerName', 'buyerUser', 'city', 'state', 'country', 'currency', 'status', 'sku', 'itemCount'].forEach(k => { if (clean[k]) m[k] = clean[k]; });
         if (clean.phone && !old.phone) m.phone = clean.phone;
         if (clean.items && clean.items.length) m.items = clean.items;
-        const newIsOrders = n._src === 'orders' || n._src === 'combined' || clean._totalSrc === 'orders';
-        if (newIsOrders || old._totalSrc !== 'orders') { m.total = clean.total; m._totalSrc = newIsOrders ? 'orders' : (old._totalSrc || 'items'); }
+        if (clean.moneySrc === 'orders' || old.moneySrc !== 'orders') MONEY_FIELDS.forEach(k => { m[k] = clean[k]; });
+        if (clean.fxRate && (m.currency !== old.currency || m.date !== old.date || !old.fxRate)) { m.fxRate = clean.fxRate; m.fxSource = clean.fxSource; }
+        else if (m.currency !== old.currency || m.date !== old.date) { delete m.fxRate; delete m.fxSource; }
+        delete m.rev; delete m._totalSrc;
         m.updatedAt = now; out.push(m); updated++;
       } else {
         clean.key = key; clean.shop = shop; clean.note = ''; clean.pdfCount = 0; clean.importedAt = now;
-        clean._totalSrc = (n._src === 'orders' || n._src === 'combined' || clean._totalSrc === 'orders') ? 'orders' : 'items';
         out.push(clean); added++;
       }
     });
@@ -692,6 +735,15 @@
           '<div class="help mt small">The backup file has orders, notes and the PDF list. The PDF files themselves stay in the GitHub repo (pdfs folder). Last backup: ' + (S.lastBackup ? date(new Date(S.lastBackup).toISOString().slice(0, 10)) : 'never') + '</div>' +
         '</div></div>' +
       '</div>' +
+      '<div class="card mt"><div class="card-head"><div><h3>Revenue rules (Etsy fees)</h3><div class="sub">Net revenue = (items - discount + postage) in ₹ - transaction fee - payment processing. Tax paid by buyer is not counted.</div></div></div><div class="card-body">' +
+        '<div class="grid three">' +
+          feeInput('transactionPct', 'Transaction fee %', 'Of order total without tax, incl. postage') +
+          feeInput('domesticPct', 'Processing % - India buyers', '') + feeInput('domesticFixed', 'Processing fixed ₹ - India buyers', '') +
+          feeInput('internationalPct', 'Processing % - other countries', '') + feeInput('internationalFixed', 'Processing fixed ₹ - other countries', '') +
+          '<div><label class="label">Your country</label><input class="input" data-fee="homeCountry" style="width:100%" value="' + esc(S.fees.homeCountry) + '"><div class="help small" style="margin-top:4px">Buyers from here are "domestic"</div></div>' +
+        '</div>' +
+        '<div class="row mt-lg wrap"><button class="btn btn-primary" id="feeSave">Save rules</button><button class="btn" id="feeReset">Use Etsy default</button><span class="help small">Money in other currencies is changed to ₹ with the ECB exchange rate of the order date.</span></div>' +
+      '</div></div>' +
       '<div class="grid half mt">' +
         '<div class="card"><div class="card-head"><h3>Shops</h3></div><div class="card-body"><ul class="rank-list">' +
           S.shops.map(s => '<li><div class="rank-main row" style="gap:8px">' + shopDot(s) + esc(s) + '</div><div class="rank-sub">' + int(S.orders.filter(o => o.shop === s).length) + ' orders</div></li>').join('') +
@@ -699,6 +751,16 @@
         '<div class="card"><div class="card-head"><h3>Delete all orders</h3></div><div class="card-body"><p class="muted" style="margin-top:0">Removes every order and note from the data file (for all computers). Old versions stay in the repo history.</p><button class="btn btn-danger" id="wipe">' + ico('trash') + 'Delete all orders</button></div></div>' +
       '</div>';
     hydrateIcons(v);
+    const saveFees = async (vals) => {
+      await DB.setMeta('fees', vals); try { await DB.flush(); } catch (e) { return toast(e.message, 'err'); }
+      await load(); toast('Revenue rules saved'); viewSettings(v);
+    };
+    v.querySelector('#feeSave').addEventListener('click', () => {
+      const vals = {};
+      v.querySelectorAll('[data-fee]').forEach(i => { const k = i.dataset.fee; vals[k] = k === 'homeCountry' ? i.value.trim() || 'India' : (parseFloat(i.value) || 0); });
+      saveFees(Object.assign({}, Revenue.DEFAULT_FEES, vals));
+    });
+    v.querySelector('#feeReset').addEventListener('click', () => saveFees(Object.assign({}, Revenue.DEFAULT_FEES)));
     v.querySelector('#bkDown').addEventListener('click', downloadBackup);
     v.querySelector('#bkUp').addEventListener('click', () => v.querySelector('#bkFile').click());
     v.querySelector('#bkFile').addEventListener('change', e => { if (e.target.files[0]) restoreBackup(e.target.files[0]); e.target.value = ''; });
@@ -718,6 +780,10 @@
       try { await DB.clearAll(); } catch (e) { return toast(e.message, 'err'); }
       await load(); toast('All orders deleted'); viewSettings(v);
     });
+  }
+
+  function feeInput(k, label, help) {
+    return '<div><label class="label">' + esc(label) + '</label><input class="input" type="number" step="0.01" min="0" data-fee="' + k + '" style="width:100%" value="' + esc(S.fees[k]) + '">' + (help ? '<div class="help small" style="margin-top:4px">' + esc(help) + '</div>' : '') + '</div>';
   }
 
   function b64ToBlob(b64, type) { const bin = atob(b64); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i); return new Blob([arr], { type }); }
