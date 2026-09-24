@@ -73,7 +73,8 @@ The app does **not** use the total from the CSV. For each order:
 3. Minus **transaction fee**: 6.5% of the sales amount
 4. Minus **payment processing**: buyer in India 3% + ₹10, other countries 5% + ₹25 (charged on what the buyer paid, tax included)
 5. Minus **regulatory operating fee** if you set a % for it (0 by default)
-6. What is left = **Net revenue**. Dashboard, shops, clients and listings all use this.
+6. Minus **listing fee (auto-renew)**: Etsy renews the listing on every sale - $0.20 for $ orders (changed to ₹), ₹19 for ₹ shops. Editable in Revenue rules.
+7. What is left = **Net revenue**. Dashboard, shops, clients and listings all use this.
 
 ### With a monthly statement: exact numbers
 When you upload the Etsy monthly statement, orders in it use **Etsy's real numbers** instead of the steps above: sale, tax paid by buyer (Etsy keeps it), transaction fee, processing fee, regulatory operating fee, refunds and other order fees. Net revenue = the sum of Etsy's "Net" column for that order, in ₹. The order page shows **Actual (from statement)** or **Estimated**.
@@ -81,6 +82,8 @@ When you upload the Etsy monthly statement, orders in it use **Etsy's real numbe
 - Orders not in any statement stay **Estimated** (the steps above).
 - Statement lines for orders you have not uploaded yet are kept and added when you upload that orders file.
 - Uploading the same statement again is safe - lines already saved are skipped.
+- The auto-renew fee of each sale is taken from the statement (matched by listing ID). If the statement has none for an order, the rule value is used.
+- **Shop costs** (dashboard): new listing fees, Etsy Ads and other charges not tied to an order. They do not change order revenue; the dashboard shows **Net after shop costs** for months with a statement.
 - **Backup & Settings → Monthly statements uploaded** lists every shop and month you have uploaded.
 
 Open any order to see each step. The fee numbers can be changed in **Backup & Settings → Revenue rules**.
