@@ -49,11 +49,36 @@
   function category(type, title) {
     const ty = type.toLowerCase(), ti = title.toLowerCase();
     if (ty === 'sale' || /^payment for order/.test(ti)) return 'sale';
+    if (/renew/.test(ti)) return 'renew';
     if (ty === 'refund' || /^refund/.test(ti)) return 'refund';
     if (/regulatory operating fee/.test(ti)) return 'reg';
     if (/processing fee/.test(ti)) return 'proc';
     if (/transaction fee/.test(ti) && !/(vat|gst|tax)\s*:/.test(ti)) return 'tx';
     if ((ty === 'tax' || /tax/.test(ti)) && !/fee/.test(ti)) return 'tax';
+    return 'other';
+  }
+
+  const listingRef = (title, info) => { const m = (info + ' | ' + title).match(/listing\s*(?:id)?\s*[:#]?\s*#?\s*(\d{5,})/i); return m ? m[1] : ''; };
+
+  // A saved line key is date|type|title|info|currency|amount|fees|net#n - rebuild the line from it.
+  function lineFromKey(k) {
+    const parts = String(k).split('|');
+    if (parts.length < 8) return null;
+    const last = parts.pop(), fees = parts.pop(), amount = parts.pop(), currency = parts.pop(), info = parts.pop();
+    const date = parts[0], type = parts[1], title = parts.slice(2).join('|');
+    const net = parseFloat(last.split('#')[0]) || 0;
+    return { k, date, type, title, info, currency, amount: amount === '' ? null : +amount, fees: fees === '' ? null : +fees, net, cat: category(type, title), listingId: listingRef(title, info) };
+  }
+
+  // Non-order lines -> shop cost group. null = not a cost (deposits, payments to Etsy).
+  function costGroup(l) {
+    const ty = (l.type || '').toLowerCase(), ti = (l.title || '').toLowerCase();
+    if (ty === 'deposit' || /sent to your bank|deposit/.test(ti)) return null;
+    if (ty === 'payment') return null;
+    if (/renew/.test(ti)) return 'renew';
+    if (/listing fee|listing/.test(ti)) return 'listing';
+    if (ty === 'marketing' || /\bads\b|advertis|marketing/.test(ti)) return 'ads';
+    if (!l.net) return null;
     return 'other';
   }
 
@@ -74,7 +99,7 @@
       const k = base + '#' + seen[base];
       if (date) months[date.slice(0, 7)] = (months[date.slice(0, 7)] || 0) + 1;
       if (currency) curCount[currency] = (curCount[currency] || 0) + 1;
-      lines.push({ k, date, type, title, info, currency, amount, fees, net: Math.round(net * 100) / 100, orderId: orderRef(title, info), cat: category(type, title) });
+      lines.push({ k, date, type, title, info, currency, amount, fees, net: Math.round(net * 100) / 100, orderId: orderRef(title, info), listingId: listingRef(title, info), cat: category(type, title) });
     });
     const period = Object.keys(months).sort((a, b) => months[b] - months[a])[0] || '';
     const currency = Object.keys(curCount).sort((a, b) => curCount[b] - curCount[a])[0] || '';
@@ -82,6 +107,6 @@
     return { period, currency, lines, orderIds };
   }
 
-  const api = { detect, parse, money, isoDate, orderRef, category };
+  const api = { detect, parse, money, isoDate, orderRef, listingRef, category, lineFromKey, costGroup };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.EtsyStatement = api;
 })(typeof window !== 'undefined' ? window : this);
