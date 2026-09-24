@@ -133,7 +133,7 @@
   function route() {
     const r = (location.hash.replace(/^#\/?/, '').split('?')[0]) || 'dashboard';
     const name = TITLES[r] ? r : 'dashboard';
-    document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
+    document.querySelectorAll('#nav a, #tabbar a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
     document.getElementById('pageTitle').textContent = TITLES[name];
     document.getElementById('sidebar').classList.remove('open');
     drawer.close();
@@ -313,7 +313,7 @@
       const total = list.reduce((s, o) => s + net(o), 0);
       document.getElementById('ordCard').innerHTML =
         '<div class="card-head"><h3>' + int(list.length) + ' orders</h3><span class="sub">Net revenue ' + cur(total) + '</span></div>' +
-        (rows.length ? '<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th>Shop</th><th class="num">Net revenue</th><th>PDF</th><th>Note</th></tr></thead><tbody>' +
+        (rows.length ? '<div class="table-wrap t-orders"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th>Shop</th><th class="num">Net revenue</th><th>PDF</th><th>Note</th></tr></thead><tbody>' +
           rows.map(o => '<tr class="clickable" data-key="' + esc(o.key) + '">' +
             '<td class="muted" style="white-space:nowrap">' + date(o.date) + '</td>' +
             '<td><div class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</div><div class="cell-sub">' + esc(place(o) || '#' + o.orderId) + '</div></td>' +
@@ -323,9 +323,14 @@
             '<td>' + (o.pdfCount ? '<span class="badge badge-green">' + ico('check') + 'Added</span>' : '<span class="badge badge-amber">Missing</span>') + '</td>' +
             '<td class="muted">' + (o.note ? '<span class="cell-title" style="max-width:160px;display:block">' + esc(o.note) + '</span>' : '-') + '</td></tr>').join('') +
           '</tbody></table></div>' +
+          '<div class="m-list">' + rows.map(o => '<div class="m-item" data-key="' + esc(o.key) + '">' +
+            '<div class="m-top"><span class="cell-strong m-name">' + esc(o.buyerName || o.buyerUser || '-') + '</span><span class="cell-strong" style="white-space:nowrap">' + (isPrimary(o) ? cur(net(o)) : '<span class="badge badge-amber">Rate pending</span>') + '</span></div>' +
+            '<div class="m-title">' + esc(firstTitle(o)) + ((o.items || []).length > 1 ? ' <span class="muted">+' + (o.items.length - 1) + ' more</span>' : '') + '</div>' +
+            '<div class="m-meta"><span>' + date(o.date) + '</span><span class="row" style="gap:5px">' + shopDot(o.shop) + esc(o.shop) + '</span><span>Paid ' + inrOr(o, paidOf(o)) + ' · ' + (isActual(o) ? '<span style="color:var(--green)">actual</span>' : 'est.') + '</span>' +
+            (o.pdfCount ? '<span class="badge badge-green">PDF</span>' : '<span class="badge badge-amber">No PDF</span>') + (o.note ? '<span class="badge">Note</span>' : '') + '</div></div>').join('') + '</div>' +
           '<div class="pager"><span>Page ' + f.page + ' of ' + pages + '</span><div class="row"><button class="btn btn-sm" data-pg="-1"' + (f.page <= 1 ? ' disabled' : '') + '>Previous</button><button class="btn btn-sm" data-pg="1"' + (f.page >= pages ? ' disabled' : '') + '>Next</button></div></div>'
           : '<div class="empty"><h2>No orders found</h2><p>Try another search or filter.</p></div>');
-      document.querySelectorAll('#ordCard tr[data-key]').forEach(tr => tr.addEventListener('click', () => openOrder(tr.dataset.key)));
+      document.querySelectorAll('#ordCard [data-key]').forEach(tr => tr.addEventListener('click', () => openOrder(tr.dataset.key)));
       document.querySelectorAll('#ordCard [data-pg]').forEach(b => b.addEventListener('click', () => { f.page += +b.dataset.pg; draw(); window.scrollTo(0, 0); }));
       hydrateIcons(document.getElementById('ordCard'));
     };
