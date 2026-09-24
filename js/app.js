@@ -324,7 +324,7 @@
         '</div>' +
         moneyBreakdown(o, mem0) +
         '<div class="section-title">Listing</div>' +
-        ((o.items || []).length ? o.items.map(it => '<div class="item-row"><div style="min-width:0"><div class="cell-strong">' + esc(it.title) + '</div>' + (it.variations ? '<div class="cell-sub">' + esc(it.variations) + '</div>' : '') + '<div class="cell-sub">Qty ' + it.qty + (it.discount ? ' · discount ' + inrOr(o, it.discount) + ' off' : '') + '</div></div><div style="text-align:right"><div class="cell-strong" style="white-space:nowrap">' + inrOr(o, it.total != null ? it.total - (it.discount || 0) : null) + '</div>' + (isForeign(o) ? '<div class="cell-sub">' + money(it.total, o.currency) + '</div>' : '') + '</div></div>').join('')
+        ((o.items || []).length ? o.items.map(it => '<div class="item-row"><div style="min-width:0"><div class="cell-strong">' + esc(it.title) + '</div>' + (it.variations ? '<div class="cell-sub">' + esc(it.variations) + '</div>' : '') + '<div class="cell-sub">Qty ' + it.qty + (it.discount && o.items.length === 1 ? ' · discount ' + inrOr(o, it.discount) + ' off' : '') + '</div></div><div style="text-align:right"><div class="cell-strong" style="white-space:nowrap">' + inrOr(o, it.total != null ? it.total - (o.items.length === 1 ? (it.discount || 0) : 0) : null) + '</div>' + (isForeign(o) ? '<div class="cell-sub">' + money(it.total, o.currency) + '</div>' : '') + '</div></div>').join('')
           : '<div class="muted">Listing name not in this file. Upload the "Order Items" file for this shop.</div>') +
         '<div class="section-title">Reading PDF</div>' +
         '<div id="pdfList">' + pdfRows(pdfs) + '</div>' +
@@ -572,6 +572,7 @@
     const wb = XLSX.read(buf, { type: 'array', cellDates: true });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    rows.forEach((r, i) => { r._n = i + 1; });
     return P.rowsToObjects(rows.filter(r => r.some(c => String(c).trim() !== '')));
   }
 
@@ -621,12 +622,36 @@
     const noCountry = incoming.filter(o => !o.country).length;
     if (noCountry) warnings.push(noCountry + ' order(s) have no country in the file, so they are counted as international (' + S.fees.internationalPct + '% + ₹' + S.fees.internationalFixed + '). Upload the "Orders" file too - it has the buyer country.');
     if (otherShop) warnings.unshift('The file name says "' + otherShop + '" but you chose "' + u.shop + '". Please check the shop.');
+    const rowInfo = good.concat(results.filter(r => r.type === 'unknown')).map(r => {
+      const merged = r.mergedRows || [], dups = r.dupRows || [], skip = r.skippedRows || [];
+      const byOrder = {};
+      merged.forEach(m => { (byOrder[m.orderId] = byOrder[m.orderId] || { first: m.firstRow, rows: [] }).rows.push(m.row); });
+      return {
+        file: r.file, rows: r.rows || 0, orders: r.orders.length, merged: merged.length, dups: dups.length, skipped: skip.length,
+        mergedText: Object.keys(byOrder).map(id => 'order #' + id + ': rows ' + [byOrder[id].first].concat(byOrder[id].rows).join(' + ')),
+        dupText: dups.map(d => 'row ' + d.row + ' is a copy of row ' + d.firstRow + ' (order #' + d.orderId + ')'),
+        skipText: r.type === 'unknown' ? ['whole file (not an Etsy orders file)'] : skip.map(x => 'row ' + x.row + ': ' + x.reason)
+      };
+    });
     u.parsed = {
+      rowInfo,
       statements: stmts,
       files: good.map(r => r.file + ' (' + ({ items: 'Order Items', orders: 'Orders', combined: 'Orders + Items' })[r.type] + ')').concat(stmts.map(st => st.file + ' (Monthly statement)')),
       orders: incoming, newCount: keys.filter(k => !existing.has(k)).length, updCount: keys.filter(k => existing.has(k)).length, warnings
     };
     reviewImport(box);
+  }
+
+  // "40 rows -> 37 orders" explained per file: extra items of the same order, copied rows, skipped rows
+  function rowMath(info) {
+    if (!info || !info.length) return '';
+    return '<div class="help mt-lg">' + info.map(r => {
+      const parts = [];
+      if (r.merged) parts.push('<div class="mt small"><b>' + int(r.merged) + (r.merged === 1 ? ' row is an extra item' : ' rows are extra items') + ' in an order already counted</b> (one order with more than one listing): ' + esc(r.mergedText.join('; ')) + '</div>');
+      if (r.dups) parts.push('<div class="mt small"><b>' + int(r.dups) + (r.dups === 1 ? ' row is an exact copy' : ' rows are exact copies') + '</b> (same Transaction ID), counted once: ' + esc(r.dupText.join('; ')) + '</div>');
+      if (r.skipped) parts.push('<div class="mt small" style="color:var(--red)"><b>' + int(r.skipped) + (r.skipped === 1 ? ' row skipped' : ' rows skipped') + ':</b> ' + esc(r.skipText.join('; ')) + '</div>');
+      return '<div><b>' + esc(r.file) + ':</b> ' + int(r.rows) + ' rows → ' + int(r.orders) + ' orders' + (!parts.length ? ' (every row is its own order)' : '') + parts.join('') + '</div>';
+    }).join('<div class="mt"></div>') + '</div>';
   }
 
   function mergeOrder(a, b) {
@@ -673,6 +698,7 @@
         '<div class="s"><div class="s-n" style="font-size:16px;padding-top:5px">' + (dates.length ? date(dates[0]) + ' - ' + date(dates[dates.length - 1]) : '-') + '</div><div class="s-l">Dates</div></div>' +
         '<div class="s"><div class="s-n">' + int(withPhone) + '</div><div class="s-l">With phone</div></div>' +
       '</div>' +
+      rowMath(p.rowInfo) +
       (p.warnings.length ? '<div class="mt-lg">' + p.warnings.map(w => '<div class="notice" style="margin-top:8px">' + ico('info') + '<div>' + esc(w) + '</div></div>').join('') + '</div>' : '') +
       '<div class="card mt-lg" style="box-shadow:none"><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th class="num">Paid</th><th class="num">Net revenue</th></tr></thead><tbody>' +
         sample.map(o => '<tr><td class="muted" style="white-space:nowrap">' + date(o.date) + '</td><td class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</td><td><div class="cell-title">' + esc(firstTitle(o)) + '</div></td><td class="num">' + inrOr(o, paidOf(o)) + '</td><td class="num cell-strong">' + (o.rev && !o.rev.pending ? cur(o.rev.net) : '-') + '</td></tr>').join('') +
