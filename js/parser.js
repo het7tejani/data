@@ -111,6 +111,31 @@
     return '';
   }
 
+  const round2 = n => Math.round((n || 0) * 100) / 100;
+
+  // Money breakdown in the order's own currency.
+  // gross = items - discount + shipping - shipping discount (tax NOT included). tax = what buyer paid on top.
+  function moneyFor(o) {
+    let subtotal, discount, shipping, shipDiscount, tax, orderTotal, moneySrc;
+    if (o._orderMoney) {
+      const m = o._orderMoney; moneySrc = 'orders';
+      subtotal = m.subtotal || o.items.reduce((s, it) => s + it.total, 0);
+      discount = m.discount; shipping = m.shipping; shipDiscount = m.shipDiscount;
+      const gross = subtotal - discount + shipping - shipDiscount;
+      orderTotal = m.orderTotal || gross + m.salesTax;
+      tax = Math.max(m.salesTax || 0, orderTotal - gross);   // Order Total also hides VAT
+    } else {
+      const m = o._itemsMoney || { shipping: 0, shipDiscount: 0, tax: 0 }; moneySrc = 'items';
+      subtotal = o.items.reduce((s, it) => s + it.total, 0);
+      discount = o.items.reduce((s, it) => s + (it.discount || 0), 0);
+      shipping = m.shipping; shipDiscount = m.shipDiscount; tax = m.tax;
+      orderTotal = subtotal - discount + shipping - shipDiscount + tax;
+    }
+    const gross = subtotal - discount + shipping - shipDiscount;
+    return { subtotal: round2(subtotal), discount: round2(discount), shipping: round2(shipping), shipDiscount: round2(shipDiscount),
+             tax: round2(Math.max(0, tax)), orderTotal: round2(orderTotal), gross: round2(gross), total: round2(orderTotal), moneySrc };
+  }
+
   const clean = v => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
   const cleanId = v => {
     if (typeof v === 'number') return String(Math.round(v));
@@ -175,21 +200,38 @@
       setIf('currency', get(r, ['Currency']));
       setIf('status', get(r, ['Status', 'Order Status']));
 
+      const money = (names) => toNumber(get(r, names));
       if (type === 'items' || type === 'combined') {
         const title = clean(get(r, ['Item Name', 'Listing Title', 'Title', 'Item']));
         const qty = toNumber(get(r, ['Quantity', 'Qty'])) || 1;
-        const price = toNumber(get(r, ['Price', 'Item Price']));
-        let total = toNumber(get(r, ['Item Total']));
-        if (!total) total = price * qty - toNumber(get(r, ['Discount Amount']));
+        const price = money(['Price', 'Item Price']);
+        let total = money(['Item Total']);
+        if (!total) total = price * qty;
+        const disc = money(['Discount Amount']);
         o.items.push({
-          title: title || '(no title)', qty, price, total: Math.round(total * 100) / 100,
+          title: title || '(no title)', qty, price, total: round2(total), discount: round2(disc),
           transactionId: txId, listingId: cleanId(get(r, ['Listing ID'])),
           variations: clean(get(r, ['Variations']))
         });
+        if (!o._itemsMoney) o._itemsMoney = { shipping: 0, shipDiscount: 0, tax: 0 };
+        // order-level values repeat on every row of the order: keep the first non-zero
+        const sh = money(['Order Shipping', 'Order Delivery', 'Shipping']);
+        const sd = money(['Shipping Discount', 'Delivery Discount']);
+        const tx = money(['Order Sales Tax', 'Sales Tax']);
+        if (sh && !o._itemsMoney.shipping) o._itemsMoney.shipping = sh;
+        if (sd && !o._itemsMoney.shipDiscount) o._itemsMoney.shipDiscount = sd;
+        if (tx && !o._itemsMoney.tax) o._itemsMoney.tax = tx;
       }
       if (type === 'orders' || type === 'combined') {
-        const t = toNumber(get(r, ['Order Total', 'Order Value', 'Adjusted Order Total', 'Total']));
-        if (t && !o.orderTotalFromFile) o.orderTotalFromFile = t;
+        if (!o._orderMoney) {
+          const subtotal = money(['Order Value']);
+          const discount = money(['Discount Amount']);
+          const shipping = money(['Shipping', 'Delivery']);
+          const shipDiscount = money(['Shipping Discount', 'Delivery Discount']);
+          const salesTax = money(['Sales Tax']);
+          const orderTotal = money(['Order Total', 'Adjusted Order Total', 'Total']);
+          if (subtotal || orderTotal) o._orderMoney = { subtotal, discount, shipping, shipDiscount, salesTax, orderTotal };
+        }
         if (type === 'orders') {
           const n = toNumber(get(r, ['Number of Items'])) || 0;
           o.itemCount = n;
@@ -201,9 +243,9 @@
 
     const orders = [];
     byId.forEach(o => {
-      const itemsSum = o.items.reduce((s, it) => s + it.total, 0);
-      o.total = Math.round((o.orderTotalFromFile || itemsSum) * 100) / 100;
-      delete o.orderTotalFromFile;
+      const m = moneyFor(o);
+      Object.assign(o, m);
+      delete o._itemsMoney; delete o._orderMoney;
       orders.push(o);
     });
     if (type === 'orders') warnings.push('This is the "Orders" file. It has no listing names. For listing names, also upload the "Order Items" file.');
@@ -219,7 +261,7 @@
     return best;
   }
 
-  const api = { parseCSV, rowsToObjects, normalize, detectType, toISODate, toNumber, guessShop, norm };
+  const api = { moneyFor, parseCSV, rowsToObjects, normalize, detectType, toISODate, toNumber, guessShop, norm };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.EtsyParser = api;
 })(typeof window !== 'undefined' ? window : this);
