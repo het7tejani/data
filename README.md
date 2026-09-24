@@ -66,7 +66,7 @@ Open any order and type in **Notes**. It saves by itself.
 
 The app does **not** use the total from the CSV. For each order:
 
-1. **Sales** = items - discount + postage (tax paid by the buyer is left out)
+1. **Sales** = Item Total - Discount Amount + postage (tax paid by the buyer is left out). Etsy's Item Total is BEFORE the discount, so the discount is subtracted first - exactly as you asked.
 2. Changed to **₹** using the ECB exchange rate of the order date (free, from frankfurter.dev). ₹ orders stay as they are.
 3. Minus **transaction fee**: 6.5% of the sales amount
 4. Minus **payment processing**: buyer in India 3% + ₹10, other countries 5% + ₹25 (charged on what the buyer paid, tax included)
