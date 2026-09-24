@@ -13,11 +13,11 @@ One simple place for the orders of all 5 Etsy shops:
 
 ## Open the app
 
-**https://het7tejani.github.io/data/**
+Open your **Vercel** link for this project (Vercel dashboard → this project → **Visit**).
 
 Open this link in Chrome on any computer. Bookmark it. Nothing to install.
 
-> If the link does not open yet, wait 2-3 minutes after the first setup (GitHub needs a moment).
+> Every change pushed to this repo goes live on Vercel by itself in about a minute.
 
 ### First time on each computer: connect GitHub
 1. Make a GitHub token: github.com → your photo → **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)** → **Generate new token (classic)** → tick **repo** → **Generate token**. Copy the code (starts with `ghp_`).
@@ -31,7 +31,7 @@ Open this link in Chrome on any computer. Bookmark it. Nothing to install.
 2. **Download Data** tab → **Orders**
 3. CSV Type: **Order Items** (this has listing names). Choose the year. Leave month empty for full year.
 4. Click **Download CSV**
-5. Optional: also download CSV Type **Orders** - it adds the buyer username and order total.
+5. Also download CSV Type **Orders** (recommended) - it has the discount, tax and buyer country, so revenue is exact.
 
 Do this for each shop.
 
@@ -62,6 +62,19 @@ Open any order and type in **Notes**. It saves by itself.
 - The token stays only in that computer's browser. On a shared computer, click **Disconnect this computer** when done.
 - Optional: **Download backup** gives one file with all orders and notes.
 
+## How revenue is counted (₹)
+
+The app does **not** use the total from the CSV. For each order:
+
+1. **Sales** = items - discount + postage (tax paid by the buyer is left out)
+2. Changed to **₹** using the ECB exchange rate of the order date (free, from frankfurter.dev). ₹ orders stay as they are.
+3. Minus **transaction fee**: 6.5% of the sales amount
+4. Minus **payment processing**: buyer in India 3% + ₹10, other countries 5% + ₹25 (charged on what the buyer paid, tax included)
+5. What is left = **Net revenue**. Dashboard, shops, clients and listings all use this.
+
+Open any order to see each step. The fee numbers can be changed in **Backup & Settings → Revenue rules**.
+If an order has no country (only the Order Items file was uploaded), it is counted as "other countries".
+
 ## Phone numbers
 
 Etsy's order files normally do not include buyer phone numbers. If a file has a phone column, the app reads it. Otherwise you can add a phone on the order page.
@@ -73,9 +86,10 @@ Plain HTML/CSS/JavaScript, no build step. Data is stored through the GitHub Cont
 - `index.html` - layout
 - `css/app.css` - design
 - `js/parser.js` - Etsy CSV/Excel reading (works in Node too)
+- `js/revenue.js` - net revenue: ₹ conversion (ECB rates) and Etsy fees
 - `js/store.js` - GitHub storage (private repo) + local cache
 - `js/ui.js` - small UI helpers and chart
 - `js/app.js` - screens
 
 Run locally: `python3 -m http.server` in this folder, then open http://localhost:8000.
-Hosted with GitHub Pages from the `main` branch root.
+Hosted on Vercel (static site, auto-deploys from `main`). No build step.
