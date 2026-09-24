@@ -264,3 +264,4 @@ textarea.notes { width: 100%; min-height: 110px; padding: 10px 12px; border: 1px
 .sync-status.ok { color: var(--green); }
 .sync-status.err { color: var(--red); cursor: pointer; }
 .sync-status .ico { width: 14px; height: 14px; }
+.section-sub { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
