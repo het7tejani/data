@@ -22,6 +22,11 @@
   const firstTitle = o => o.items && o.items.length ? o.items[0].title : (o.sku ? 'SKU ' + o.sku : '(listing name not in file)');
   const isPrimary = o => !!(o.rev && !o.rev.pending);
   const net = o => isPrimary(o) ? o.rev.net : 0;
+  // amount in the order's own currency -> INR (null while the exchange rate is not loaded)
+  const toINR = (o, amt) => { if (amt == null) return null; const c = (o.currency || 'INR').toUpperCase(); if (c === 'INR') return amt; const r = (o.rev && o.rev.rate) || o.fxRate; return r ? amt * r : null; };
+  const isForeign = o => (o.currency || 'INR').toUpperCase() !== 'INR';
+  const paidOf = o => o.orderTotal != null ? o.orderTotal : o.total;
+  const inrOr = (o, amt, dash) => { const v = toINR(o, amt); return v == null ? (dash || '-') : money(v, 'INR'); };
   const itemNet = (o, it) => { const base = o.subtotal || (o.items || []).reduce((s, x) => s + (x.total || 0), 0); return base ? net(o) * (it.total || 0) / base : 0; };
   const MONEY_FIELDS = ['subtotal', 'discount', 'shipping', 'shipDiscount', 'tax', 'orderTotal', 'gross', 'total', 'moneySrc'];
   const stripRev = o => { const c = Object.assign({}, o); delete c.rev; return c; };
@@ -252,7 +257,7 @@
             '<td><div class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</div><div class="cell-sub">' + esc(place(o) || '#' + o.orderId) + '</div></td>' +
             '<td><div class="cell-title" title="' + esc(firstTitle(o)) + '">' + esc(firstTitle(o)) + '</div>' + ((o.items || []).length > 1 ? '<div class="cell-sub">+' + (o.items.length - 1) + ' more</div>' : '') + '</td>' +
             '<td><span class="row" style="gap:6px;white-space:nowrap">' + shopDot(o.shop) + esc(o.shop) + '</span></td>' +
-            '<td class="num"><div class="cell-strong">' + (isPrimary(o) ? cur(net(o)) : '<span class="badge badge-amber">Rate pending</span>') + '</div><div class="cell-sub">Paid ' + money(o.orderTotal != null ? o.orderTotal : o.total, o.currency || S.shopCurrency) + '</div></td>' +
+            '<td class="num"><div class="cell-strong">' + (isPrimary(o) ? cur(net(o)) : '<span class="badge badge-amber">Rate pending</span>') + '</div><div class="cell-sub">Paid ' + inrOr(o, paidOf(o)) + '</div></td>' +
             '<td>' + (o.pdfCount ? '<span class="badge badge-green">' + ico('check') + 'Added</span>' : '<span class="badge badge-amber">Missing</span>') + '</td>' +
             '<td class="muted">' + (o.note ? '<span class="cell-title" style="max-width:160px;display:block">' + esc(o.note) + '</span>' : '-') + '</td></tr>').join('') +
           '</tbody></table></div>' +
@@ -313,7 +318,7 @@
         '</div>' +
         moneyBreakdown(o, mem0) +
         '<div class="section-title">Listing</div>' +
-        ((o.items || []).length ? o.items.map(it => '<div class="item-row"><div style="min-width:0"><div class="cell-strong">' + esc(it.title) + '</div>' + (it.variations ? '<div class="cell-sub">' + esc(it.variations) + '</div>' : '') + '<div class="cell-sub">Qty ' + it.qty + '</div></div><div class="cell-strong" style="white-space:nowrap">' + money(it.total, o.currency || S.currency) + '</div></div>').join('')
+        ((o.items || []).length ? o.items.map(it => '<div class="item-row"><div style="min-width:0"><div class="cell-strong">' + esc(it.title) + '</div>' + (it.variations ? '<div class="cell-sub">' + esc(it.variations) + '</div>' : '') + '<div class="cell-sub">Qty ' + it.qty + (it.discount ? ' · discount ' + inrOr(o, it.discount) + ' off' : '') + '</div></div><div style="text-align:right"><div class="cell-strong" style="white-space:nowrap">' + inrOr(o, it.total != null ? it.total - (it.discount || 0) : null) + '</div>' + (isForeign(o) ? '<div class="cell-sub">' + money(it.total, o.currency) + '</div>' : '') + '</div></div>').join('')
           : '<div class="muted">Listing name not in this file. Upload the "Order Items" file for this shop.</div>') +
         '<div class="section-title">Reading PDF</div>' +
         '<div id="pdfList">' + pdfRows(pdfs) + '</div>' +
@@ -321,6 +326,8 @@
         '<div class="section-title">Notes</div>' +
         '<textarea class="notes" id="noteIn" placeholder="Write anything about this order or client...">' + esc(o.note || '') + '</textarea>' +
         '<div class="saved-hint" id="savedHint"></div>' +
+        '<div class="section-title">Delete</div>' +
+        '<div class="row between wrap" style="gap:10px"><span class="muted small">Removes this order, its notes and its PDF' + (pdfs.length > 1 ? 's' : '') + ' for good.</span><button class="btn btn-danger" id="ordDel">' + ico('trash') + 'Delete this order</button></div>' +
       '</div>');
     hydrateIcons(d);
     d.querySelector('[data-close]').addEventListener('click', drawer.close);
@@ -348,20 +355,36 @@
     };
     bindDrop(dz, fi, add);
     bindPdfRows(key);
+
+    d.querySelector('#ordDel').addEventListener('click', async () => {
+      const n = (await DB.pdfsForOrder(key)).length;
+      const who = o.buyerName || o.buyerUser || 'this client';
+      if (!await confirmBox({ title: 'Delete this order?', text: 'Order #' + o.orderId + ' (' + who + ') will be removed with its notes' + (n ? ' and ' + n + ' PDF' + (n > 1 ? 's' : '') : '') + '. This cannot be undone. If you upload the same Etsy file again, the order comes back (without notes and PDF).', ok: 'Delete', danger: true })) return;
+      toast('Deleting...');
+      try { await DB.deleteOrder(key); await DB.flush(); } catch (err) { return toast(err.message, 'err'); }
+      S.orders = S.orders.filter(x => x.key !== key);
+      renderSidebarFoot();
+      drawer.onClose = null;
+      drawer.close();
+      softRefresh();
+      toast('Order deleted');
+    });
   }
 
   function moneyBreakdown(o, m) {
     const c = o.currency || S.shopCurrency, r = m.rev || {};
     const line = (k, v, cls) => '<div class="item-row" style="padding:6px 0"><span class="' + (cls || 'muted') + '">' + k + '</span><span class="' + (cls || '') + '" style="white-space:nowrap">' + v + '</span></div>';
+    const foreign = c.toUpperCase() !== 'INR';
+    const amt = (a, minus) => { const v = toINR(o, a); const main = v == null ? money(a, c) : money(v, 'INR'); return (minus ? '- ' : '') + main + (foreign && v != null ? ' <span class="muted small">(' + money(a, c) + ')</span>' : ''); };
     let h = '<div class="section-title">Money</div>' +
-      line('Items', money(o.subtotal != null ? o.subtotal : o.total, c)) +
-      (o.discount ? line('Discount', '- ' + money(o.discount, c)) : '') +
-      ((o.shipping || 0) - (o.shipDiscount || 0) ? line('Postage', money((o.shipping || 0) - (o.shipDiscount || 0), c)) : '') +
-      (o.tax ? line('Tax paid by buyer (not revenue)', money(o.tax, c)) : '') +
-      line('Buyer paid', money(o.orderTotal != null ? o.orderTotal : o.total, c));
+      line('Items', amt(o.subtotal != null ? o.subtotal : o.total)) +
+      (o.discount ? line('Discount', amt(o.discount, true)) : '') +
+      ((o.shipping || 0) - (o.shipDiscount || 0) ? line('Postage', amt((o.shipping || 0) - (o.shipDiscount || 0))) : '') +
+      (o.tax ? line('Tax paid by buyer (not revenue)', amt(o.tax)) : '') +
+      line('Buyer paid', amt(paidOf(o)));
     if (r.pending) return h + '<div class="notice mt">' + ico('info') + '<div>Exchange rate not loaded yet. Open the app with internet and it fills in.</div></div>';
     h += (c.toUpperCase() !== 'INR' ? line('Rate', '1 ' + esc(c) + ' = ₹' + r.rate.toFixed(2) + (o.fxSource ? ' (' + esc(o.fxSource) + ')' : '')) : '') +
-      line('Sales in ₹ (after discount, no tax)', cur(r.grossINR)) +
+      line('Sales (after discount, no tax)', cur(r.grossINR)) +
       line('Transaction fee ' + S.fees.transactionPct + '%', '- ' + cur(r.txFee)) +
       line('Payment processing (' + (r.domestic ? 'India ' + S.fees.domesticPct + '% + ₹' + S.fees.domesticFixed : 'international ' + S.fees.internationalPct + '% + ₹' + S.fees.internationalFixed) + ')', '- ' + cur(r.procFee)) +
       line('Net revenue', cur(r.net), 'cell-strong');
@@ -578,10 +601,10 @@
   function reviewImport(box) {
     const u = S.up, p = u.parsed;
     const dates = p.orders.map(o => o.date).filter(Boolean).sort();
-    const total = p.orders.reduce((s, o) => s + (o.orderTotal || 0), 0);
+    const total = p.orders.reduce((s, o) => s + (toINR(o, paidOf(o) || 0) || 0), 0);
     const curr = (p.orders.find(o => o.currency) || {}).currency || S.shopCurrency;
     const netTotal = p.orders.reduce((s, o) => s + (o.rev && !o.rev.pending ? o.rev.net : 0), 0);
-    const discTotal = p.orders.reduce((s, o) => s + (o.discount || 0), 0);
+    const discTotal = p.orders.reduce((s, o) => s + (toINR(o, o.discount || 0) || 0), 0);
     const withPhone = p.orders.filter(o => o.phone).length;
     const sample = p.orders.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 8);
     box.innerHTML = '<div class="card card-pad">' + stepper(3) +
@@ -590,14 +613,14 @@
         '<div class="s"><div class="s-n">' + int(p.orders.length) + '</div><div class="s-l">Orders found</div></div>' +
         '<div class="s"><div class="s-n" style="color:var(--green)">' + int(p.newCount) + '</div><div class="s-l">New</div></div>' +
         '<div class="s"><div class="s-n">' + int(p.updCount) + '</div><div class="s-l">Already saved (will update)</div></div>' +
-        '<div class="s"><div class="s-n">' + money(total, curr) + '</div><div class="s-l">Buyers paid' + (discTotal ? ' (discount ' + money(discTotal, curr) + ')' : '') + '</div></div>' +
-        '<div class="s"><div class="s-n" style="color:var(--green)">' + cur(netTotal) + '</div><div class="s-l">Net revenue (₹, after fees)</div></div>' +
+        '<div class="s"><div class="s-n">' + cur(total) + '</div><div class="s-l">Buyers paid' + (discTotal ? ' (discount ' + cur(discTotal) + ')' : '') + '</div></div>' +
+        '<div class="s"><div class="s-n" style="color:var(--green)">' + cur(netTotal) + '</div><div class="s-l">Net revenue (after fees)</div></div>' +
         '<div class="s"><div class="s-n" style="font-size:16px;padding-top:5px">' + (dates.length ? date(dates[0]) + ' - ' + date(dates[dates.length - 1]) : '-') + '</div><div class="s-l">Dates</div></div>' +
         '<div class="s"><div class="s-n">' + int(withPhone) + '</div><div class="s-l">With phone</div></div>' +
       '</div>' +
       (p.warnings.length ? '<div class="mt-lg">' + p.warnings.map(w => '<div class="notice" style="margin-top:8px">' + ico('info') + '<div>' + esc(w) + '</div></div>').join('') + '</div>' : '') +
-      '<div class="card mt-lg" style="box-shadow:none"><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th class="num">Paid</th><th class="num">Net ₹</th></tr></thead><tbody>' +
-        sample.map(o => '<tr><td class="muted" style="white-space:nowrap">' + date(o.date) + '</td><td class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</td><td><div class="cell-title">' + esc(firstTitle(o)) + '</div></td><td class="num">' + money(o.orderTotal, o.currency || curr) + '</td><td class="num cell-strong">' + (o.rev && !o.rev.pending ? cur(o.rev.net) : '-') + '</td></tr>').join('') +
+      '<div class="card mt-lg" style="box-shadow:none"><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th class="num">Paid</th><th class="num">Net revenue</th></tr></thead><tbody>' +
+        sample.map(o => '<tr><td class="muted" style="white-space:nowrap">' + date(o.date) + '</td><td class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</td><td><div class="cell-title">' + esc(firstTitle(o)) + '</div></td><td class="num">' + inrOr(o, paidOf(o)) + '</td><td class="num cell-strong">' + (o.rev && !o.rev.pending ? cur(o.rev.net) : '-') + '</td></tr>').join('') +
       '</tbody></table></div>' + (p.orders.length > sample.length ? '<div class="pager">+ ' + int(p.orders.length - sample.length) + ' more orders</div>' : '') + '</div>' +
       '<div class="row mt-lg" style="justify-content:flex-end"><button class="btn" id="impCancel">Cancel</button><button class="btn btn-primary btn-lg" id="impSave">' + ico('check') + 'Save ' + int(p.orders.length) + ' orders</button></div>' +
       '</div>';
