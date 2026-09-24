@@ -3,6 +3,7 @@
   'use strict';
   const { ico, esc, money, int, date, monthLabel, bytes, toast, confirmBox, drawer, barChart, shortNum, hydrateIcons } = UI;
   const P = EtsyParser;
+  const ST = EtsyStatement;
 
   const DEFAULT_SHOPS = ['PsychicEra', 'PsychicSutra', 'DaisyMediumStudio', 'RosyMediumStudio', 'ladygeorgia'];
   const COLORS = ['#6d5dfc', '#e8590c', '#f59f00', '#e64980', '#12b886', '#228be6', '#7950f2', '#fa5252'];
@@ -12,7 +13,8 @@
     dash: { shop: 'all', period: 'all' },
     list: { shop: 'all', month: 'all', pdf: 'all', q: '', page: 1 },
     cl: { q: '', sort: 'spent' },
-    up: { tab: 'orders', shop: null, parsed: null, files: [], pdfs: [] }
+    up: { tab: 'orders', shop: null, parsed: null, files: [], pdfs: [] },
+    statements: {}
   };
 
   const shopColor = shop => { const i = S.shops.indexOf(shop); return COLORS[(i < 0 ? S.shops.length : i) % COLORS.length]; };
@@ -41,15 +43,17 @@
     const top = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
     S.currency = 'INR'; S.shopCurrency = top || 'USD';
     S.fees = Object.assign({}, Revenue.DEFAULT_FEES, await DB.getMeta('fees', {}));
-    if (S.orders.some(o => o.currency && o.currency.toUpperCase() !== 'INR' && !o.fxRate)) {
-      try { if (await Revenue.ensureFx(S.orders)) await DB.putOrders(S.orders.filter(o => o.fxRate).map(stripRev)); } catch (e) { console.warn(e); }
-    }
+    S.statements = await DB.getMeta('statements', {});
+    S.stmtPending = await DB.getMeta('stmtPending', {});
+    try { if (await Revenue.ensureFx(S.orders)) await DB.putOrders(S.orders.filter(o => o.fxRate || (o.stmt && o.stmt.fx)).map(stripRev)); } catch (e) { console.warn(e); }
     S.orders.forEach(o => { o.rev = Revenue.compute(o, S.fees); });
     S.pendingFx = S.orders.filter(o => !isPrimary(o)).length;
     S.orders.forEach(o => { if (o.shop && S.shops.indexOf(o.shop) < 0) S.shops.push(o.shop); });
     renderSidebarFoot();
   }
   const cur = n => money(n, S.currency);
+  const isActual = o => !!(o.rev && o.rev.actual && !o.rev.pending);
+  const srcBadge = o => isActual(o) ? '<span class="badge badge-green">Actual (from statement)</span>' : '<span class="badge badge-amber">Estimated</span>';
 
   function renderSidebarFoot() {
     const pdfs = S.orders.reduce((s, o) => s + (o.pdfCount || 0), 0);
@@ -110,6 +114,7 @@
     list.forEach(o => { const k = clientKey(o); const c = clients.get(k) || { name: o.buyerName || o.buyerUser, n: 0, spent: 0, shops: new Set(), last: '' }; c.n++; c.spent += net(o); c.shops.add(o.shop); if ((o.date || '') > c.last) c.last = o.date; clients.set(k, c); });
     const repeat = [...clients.values()].filter(c => c.n > 1);
     const otherCur = list.length - money_.length;
+    const nActual = money_.filter(isActual).length;
 
     // monthly
     const byMonth = {};
@@ -137,7 +142,7 @@
       '<div class="seg" id="periodSeg">' + [['all', 'All time'], ['month', 'This month'], ['3m', '3 months'], ['12m', '12 months'], ['year', 'This year'], ['lastyear', 'Last year']]
         .map(p => '<button data-p="' + p[0] + '" class="' + (f.period === p[0] ? 'active' : '') + '">' + p[1] + '</button>').join('') + '</div></div>' +
       '<div class="grid kpis">' +
-        kpi('money', 'Net revenue', cur(revenue), otherCur ? otherCur + ' order(s) waiting for exchange rate' : 'Sales ' + cur(grossINR) + ' - Etsy fees ' + cur(feesINR)) +
+        kpi('money', 'Net revenue', cur(revenue), (otherCur ? otherCur + ' order(s) waiting for exchange rate' : 'Sales ' + cur(grossINR) + ' - Etsy fees ' + cur(feesINR)) + '<br>' + (money_.length ? int(nActual) + ' actual from statement · ' + int(money_.length - nActual) + ' estimated' : '')) +
         kpi('bag', 'Orders', int(list.length), list.length ? 'Avg ' + cur(money_.length ? revenue / money_.length : 0) + ' per order' : '') +
         kpi('users', 'Clients', int(clients.size), 'Unique buyers') +
         kpi('repeat', 'Repeat clients', int(repeat.length), clients.size ? Math.round(repeat.length / clients.size * 100) + '% came back' : '') +
@@ -257,7 +262,7 @@
             '<td><div class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</div><div class="cell-sub">' + esc(place(o) || '#' + o.orderId) + '</div></td>' +
             '<td><div class="cell-title" title="' + esc(firstTitle(o)) + '">' + esc(firstTitle(o)) + '</div>' + ((o.items || []).length > 1 ? '<div class="cell-sub">+' + (o.items.length - 1) + ' more</div>' : '') + '</td>' +
             '<td><span class="row" style="gap:6px;white-space:nowrap">' + shopDot(o.shop) + esc(o.shop) + '</span></td>' +
-            '<td class="num"><div class="cell-strong">' + (isPrimary(o) ? cur(net(o)) : '<span class="badge badge-amber">Rate pending</span>') + '</div><div class="cell-sub">Paid ' + inrOr(o, paidOf(o)) + '</div></td>' +
+            '<td class="num"><div class="cell-strong">' + (isPrimary(o) ? cur(net(o)) : '<span class="badge badge-amber">Rate pending</span>') + '</div><div class="cell-sub">Paid ' + inrOr(o, paidOf(o)) + ' · ' + (isActual(o) ? '<span style="color:var(--green)">actual</span>' : 'est.') + '</div></td>' +
             '<td>' + (o.pdfCount ? '<span class="badge badge-green">' + ico('check') + 'Added</span>' : '<span class="badge badge-amber">Missing</span>') + '</td>' +
             '<td class="muted">' + (o.note ? '<span class="cell-title" style="max-width:160px;display:block">' + esc(o.note) + '</span>' : '-') + '</td></tr>').join('') +
           '</tbody></table></div>' +
@@ -284,7 +289,8 @@
         'Shop': o.shop, 'Order #': o.orderId, 'Date': o.date, 'Client': o.buyerName, 'Username': o.buyerUser || '',
         'Listing': it.title, 'Qty': it.qty, 'Item amount': it.total, 'Currency': o.currency || '',
         'Order items': o.subtotal, 'Discount': o.discount, 'Postage': (o.shipping || 0) - (o.shipDiscount || 0), 'Tax (not revenue)': o.tax, 'Buyer paid': o.orderTotal,
-        'Rate to INR': rv.rate || '', 'Sales INR': rv.grossINR, 'Transaction fee INR': rv.txFee, 'Processing fee INR': rv.procFee, 'Net revenue INR': rv.net,
+        'Rate to INR': rv.rate || '', 'Sales INR': rv.grossINR, 'Transaction fee INR': rv.txFee, 'Processing fee INR': rv.procFee, 'Regulatory fee INR': rv.regFee || 0, 'Other fees INR': rv.otherFee || 0, 'Net revenue INR': rv.net,
+        'Revenue source': rv.actual ? 'Actual (statement)' : 'Estimated',
         'Domestic': rv.domestic ? 'Yes' : 'No', 'Item net INR': Math.round(itemNet(o, it) * 100) / 100,
         'Phone': o.phone || '', 'City': o.city || '', 'State': o.state || '', 'Country': o.country || '',
         'PDFs': o.pdfCount || 0, 'Note': o.note || ''
@@ -310,7 +316,7 @@
         '<button class="icon-btn" data-close>' + ico('x') + '</button></div>' +
       '<div class="drawer-body">' +
         '<div class="kv">' +
-          '<div class="k">Net revenue</div><div class="cell-strong">' + (isPrimary(mem0) ? cur(net(mem0)) : 'Waiting for exchange rate') + '</div>' +
+          '<div class="k">Net revenue</div><div class="cell-strong">' + (isPrimary(mem0) ? cur(net(mem0)) + ' ' + srcBadge(mem0) : 'Waiting for exchange rate') + '</div>' +
           '<div class="k">Username</div><div>' + esc(o.buyerUser || '-') + '</div>' +
           '<div class="k">From</div><div>' + esc([o.city, o.state, o.country].filter(Boolean).join(', ') || '-') + '</div>' +
           '<div class="k">Phone</div><div><input class="input" id="phoneIn" style="padding:5px 9px;width:100%" placeholder="Not in Etsy file - add if you have it" value="' + esc(o.phone || '') + '"></div>' +
@@ -383,12 +389,33 @@
       (o.tax ? line('Tax paid by buyer (not revenue)', amt(o.tax)) : '') +
       line('Buyer paid', amt(paidOf(o)));
     if (r.pending) return h + '<div class="notice mt">' + ico('info') + '<div>Exchange rate not loaded yet. Open the app with internet and it fills in.</div></div>';
-    h += (c.toUpperCase() !== 'INR' ? line('Rate', '1 ' + esc(c) + ' = ₹' + r.rate.toFixed(2) + (o.fxSource ? ' (' + esc(o.fxSource) + ')' : '')) : '') +
+    if (r.actual) return h + actualBreakdown(o, r, line);
+    h += '<div class="row between" style="margin-top:12px"><span class="section-sub">Fees</span><span class="badge badge-amber">Estimated</span></div>' +
+      (c.toUpperCase() !== 'INR' ? line('Rate', '1 ' + esc(c) + ' = ₹' + r.rate.toFixed(2) + (o.fxSource ? ' (' + esc(o.fxSource) + ')' : '')) : '') +
       line('Sales (after discount, no tax)', cur(r.grossINR)) +
       line('Transaction fee ' + S.fees.transactionPct + '%', '- ' + cur(r.txFee)) +
       line('Payment processing (' + (r.domestic ? 'India ' + S.fees.domesticPct + '% + ₹' + S.fees.domesticFixed : 'international ' + S.fees.internationalPct + '% + ₹' + S.fees.internationalFixed) + ')', '- ' + cur(r.procFee)) +
-      line('Net revenue', cur(r.net), 'cell-strong');
+      (r.regFee ? line('Regulatory operating fee ' + S.fees.regulatoryPct + '%', '- ' + cur(r.regFee)) : '') +
+      line('Net revenue', cur(r.net), 'cell-strong') +
+      '<div class="help small">Fees are worked out with your revenue rules. Upload the Etsy monthly statement for this month to get the exact numbers.</div>';
     return h;
+  }
+
+  function actualBreakdown(o, r, line) {
+    const sc = r.stmtCurrency, fx = sc && sc !== 'INR';
+    const v = (inr, k, minus) => (minus ? '- ' : '') + cur(Math.abs(inr)) + (fx && r.orig && r.orig[k] != null ? ' <span class="muted small">(' + money(Math.abs(r.orig[k]), sc) + ')</span>' : '');
+    const periods = [...new Set((o.stmt.lines || []).map(l => (l.date || '').slice(0, 7)).filter(Boolean))].sort().map(monthLabel).join(', ');
+    return '<div class="row between" style="margin-top:12px"><span class="section-sub">Etsy statement</span><span class="badge badge-green">Actual (from statement)</span></div>' +
+      (fx ? line('Rate', '1 ' + esc(sc) + ' = ₹' + (r.stmtRate || 0).toFixed(2) + (sc === (o.currency || '').toUpperCase() && o.fxSource ? ' (' + esc(o.fxSource) + ')' : '')) : '') +
+      line('Sale (buyer paid)', v(r.saleINR, 'sale')) +
+      (r.taxINR ? line('Tax paid by buyer (Etsy keeps it)', v(r.taxINR, 'tax', true)) : '') +
+      (r.refundINR ? line('Refund', v(r.refundINR, 'refund', true)) : '') +
+      line('Transaction fee', v(r.txFee, 'tx', true)) +
+      line('Payment processing fee', v(r.procFee, 'proc', true)) +
+      (r.regFee ? line('Regulatory operating fee', v(r.regFee, 'reg', true)) : '') +
+      (r.otherFee ? line('Other Etsy fees', v(r.otherFee, 'other', r.otherFee > 0)) : '') +
+      line('Net revenue', cur(r.net), 'cell-strong') +
+      '<div class="help small">From ' + int(r.lineCount) + ' lines in the Etsy monthly statement' + (periods ? ' (' + esc(periods) + ')' : '') + '.</div>';
   }
 
   function pdfRows(pdfs) {
@@ -524,8 +551,10 @@
       '<label class="label">1. Which shop is this file from?</label><div class="shop-pick">' +
         S.shops.map(s => '<div class="shop-opt ' + (u.shop === s ? 'active' : '') + '" data-shop="' + esc(s) + '">' + shopDot(s) + esc(s) + '</div>').join('') + '</div>' +
       '<label class="label mt-lg">2. Drop the Etsy file</label>' +
-      '<div class="dropzone" id="ordDrop"><div class="dz-icon">' + ico('sheet') + '</div><div class="dz-title">Drop CSV or Excel file here</div><div class="dz-sub">or click to choose · you can add the "Order Items" and "Orders" files together</div><input type="file" accept=".csv,.xlsx,.xls,text/csv" multiple hidden></div>' +
+      '<div class="dropzone" id="ordDrop"><div class="dz-icon">' + ico('sheet') + '</div><div class="dz-title">Drop CSV or Excel files here</div><div class="dz-sub">or click to choose · add the orders file and the monthly statement together</div><input type="file" accept=".csv,.xlsx,.xls,text/csv" multiple hidden></div>' +
       '<div class="help mt"><b>How to get the file from Etsy</b><ol><li>Open Etsy <b>Shop Manager</b> → <b>Settings</b> → <b>Options</b></li><li>Open the <b>Download Data</b> tab, go to <b>Orders</b></li><li>CSV Type: choose <b>Order Items</b> (has listing names). Choose the year (leave month empty for full year)</li><li>Click <b>Download CSV</b>. Also download <b>Orders</b> type if you want city and country</li></ol><div class="mt small">Uploading the same file again is safe. Old orders are updated, not doubled.</div></div>' +
+      '<div class="help mt"><b>Monthly statement (exact fees and tax)</b><ol><li>Open Etsy <b>Shop Manager</b> → <b>Finances</b> → <b>Payment account</b></li><li>Open the <b>monthly statement</b> for the month you want</li><li>Click <b>Download CSV</b> and drop it here with the orders file</li></ol><div class="mt small">With a statement, the app uses Etsy\'s real fees and tax for those orders. Orders without a statement stay "Estimated". Uploading the same statement again is safe - lines already saved are skipped.</div></div>' +
+      '<div class="label mt-lg">Statements already uploaded</div>' + statementsTable() +
       '</div>';
     box.querySelectorAll('[data-shop]').forEach(el => el.addEventListener('click', () => { u.shop = el.dataset.shop; uploadOrders(box); hydrateIcons(box); }));
     const dz = box.querySelector('#ordDrop');
@@ -551,16 +580,21 @@
     const guessed = files.map(f => P.guessShop(f.name, S.shops)).find(Boolean);
     if (!u.shop && guessed) u.shop = guessed;
     if (!u.shop) { toast('First choose the shop', 'err'); return; }
-    const results = [];
+    const results = [], stmts = [];
     for (const f of files) {
       try {
         const { headers, records } = await readSheetFile(f);
+        if (ST.detect(headers)) {
+          const st = ST.parse(headers, records); st.file = f.name;
+          if (st.lines.length) stmts.push(st); else toast(f.name + ': statement has no lines', 'err');
+          continue;
+        }
         const res = P.normalize(headers, records);
         res.file = f.name; results.push(res);
       } catch (e) { console.error(e); toast('Could not read ' + f.name, 'err'); }
     }
     const good = results.filter(r => r.type !== 'unknown' && r.orders.length);
-    if (!good.length) { toast(results[0] && results[0].warnings[0] || 'No orders found in this file', 'err'); return; }
+    if (!good.length && !stmts.length) { toast(results[0] && results[0].warnings[0] || 'No orders found in this file', 'err'); return; }
     // merge results of several files (items + orders) by order id; items files last so their items win
     const merged = new Map();
     good.sort((a, b) => (a.type === 'orders' ? 0 : 1) - (b.type === 'orders' ? 0 : 1)).forEach(r => r.orders.forEach(o => {
@@ -569,7 +603,12 @@
     const incoming = [...merged.values()];
     let fxError = '';
     try { await Revenue.ensureFx(incoming); } catch (e) { fxError = 'Could not load exchange rates (' + e.message + '). Orders will be saved; revenue fills in when the app is online.'; }
-    incoming.forEach(o => { o.rev = Revenue.compute(o, S.fees); });
+    // preview with the statement lines (already saved + in this upload), so the review shows the exact numbers
+    const stLines = {};
+    S.orders.forEach(o => { if (o.stmt && o.stmt.lines) stLines[o.orderId] = o.stmt.lines.slice(); });
+    Object.keys(S.stmtPending || {}).forEach(id => { stLines[id] = (stLines[id] || []).concat(S.stmtPending[id]); });
+    stmts.forEach(st => st.lines.forEach(l => { if (!l.orderId) return; const a = stLines[l.orderId] = stLines[l.orderId] || []; if (!a.some(x => x.k === l.k)) a.push(l); }));
+    incoming.forEach(o => { const ls = stLines[o.orderId]; o.rev = Revenue.compute(ls ? Object.assign({}, o, { stmt: { lines: ls } }) : o, S.fees); });
     const existing = new Set(S.orders.map(o => o.key));
     const keys = incoming.map(o => DB.orderKey(u.shop, o.orderId));
     const warnings = [...new Set(good.flatMap(r => r.warnings))];
@@ -578,11 +617,13 @@
     }
     const otherShop = files.map(f => P.guessShop(f.name, S.shops)).find(g => g && g !== u.shop);
     if (fxError) warnings.unshift(fxError);
+    results.filter(r => r.type === 'unknown').forEach(r => warnings.unshift(r.file + ': not an Etsy orders file or monthly statement, skipped.'));
     const noCountry = incoming.filter(o => !o.country).length;
     if (noCountry) warnings.push(noCountry + ' order(s) have no country in the file, so they are counted as international (' + S.fees.internationalPct + '% + ₹' + S.fees.internationalFixed + '). Upload the "Orders" file too - it has the buyer country.');
     if (otherShop) warnings.unshift('The file name says "' + otherShop + '" but you chose "' + u.shop + '". Please check the shop.');
     u.parsed = {
-      files: good.map(r => r.file + ' (' + ({ items: 'Order Items', orders: 'Orders', combined: 'Orders + Items' })[r.type] + ')'),
+      statements: stmts,
+      files: good.map(r => r.file + ' (' + ({ items: 'Order Items', orders: 'Orders', combined: 'Orders + Items' })[r.type] + ')').concat(stmts.map(st => st.file + ' (Monthly statement)')),
       orders: incoming, newCount: keys.filter(k => !existing.has(k)).length, updCount: keys.filter(k => existing.has(k)).length, warnings
     };
     reviewImport(box);
@@ -607,6 +648,20 @@
     const discTotal = p.orders.reduce((s, o) => s + (toINR(o, o.discount || 0) || 0), 0);
     const withPhone = p.orders.filter(o => o.phone).length;
     const sample = p.orders.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 8);
+    const hasOrders = p.orders.length > 0, stmts = p.statements || [];
+    const sp = stmts.length ? previewStatements(u.shop, stmts, p.orders) : [];
+    const stmtHtml = sp.length ? '<div class="section-title">Monthly statement</div>' + sp.map(x =>
+        '<div class="item-row"><div><div class="cell-strong">' + shopDot(u.shop) + ' ' + esc(u.shop) + ' · ' + esc(x.period ? monthLabel(x.period) : 'Unknown month') + ' <span class="muted small">(' + esc(x.currency || '-') + ')</span></div>' +
+          '<div class="cell-sub">' + int(x.total) + ' lines: ' + int(x.newCount) + ' new' + (x.dupCount ? ', ' + int(x.dupCount) + ' already saved (skipped)' : '') + ' · ' + int(x.matched) + (x.matched === 1 ? ' order gets' : ' orders get') + ' exact numbers' + (x.unmatched ? ', ' + int(x.unmatched) + (x.unmatched === 1 ? ' order' : ' orders') + ' not in the app yet (kept, matched when you upload their orders file)' : '') + '</div></div>' +
+          (x.already ? '<span class="badge">Uploaded before</span>' : '<span class="badge badge-green">New month</span>') + '</div>').join('') : '';
+    const saveLabel = hasOrders ? 'Save ' + int(p.orders.length) + ' orders' + (stmts.length ? ' + statement' : '') : 'Save statement';
+    if (!hasOrders) {
+      box.innerHTML = '<div class="card card-pad">' + stepper(3) +
+        '<div class="row between wrap"><div><div class="label" style="margin:0">Ready to save to <span class="row" style="display:inline-flex;gap:6px">' + shopDot(u.shop) + esc(u.shop) + '</span></div><div class="muted small">' + p.files.map(esc).join(' · ') + '</div></div></div>' +
+        (p.warnings.length ? '<div class="mt-lg">' + p.warnings.map(w => '<div class="notice" style="margin-top:8px">' + ico('info') + '<div>' + esc(w) + '</div></div>').join('') + '</div>' : '') +
+        stmtHtml +
+        '<div class="row mt-lg" style="justify-content:flex-end"><button class="btn" id="impCancel">Cancel</button><button class="btn btn-primary btn-lg" id="impSave">' + ico('check') + saveLabel + '</button></div></div>';
+    } else
     box.innerHTML = '<div class="card card-pad">' + stepper(3) +
       '<div class="row between wrap"><div><div class="label" style="margin:0">Ready to save to <span class="row" style="display:inline-flex;gap:6px">' + shopDot(u.shop) + esc(u.shop) + '</span></div><div class="muted small">' + p.files.map(esc).join(' · ') + '</div></div></div>' +
       '<div class="summary-row mt-lg">' +
@@ -622,17 +677,22 @@
       '<div class="card mt-lg" style="box-shadow:none"><div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Client</th><th>Listing</th><th class="num">Paid</th><th class="num">Net revenue</th></tr></thead><tbody>' +
         sample.map(o => '<tr><td class="muted" style="white-space:nowrap">' + date(o.date) + '</td><td class="cell-strong">' + esc(o.buyerName || o.buyerUser || '-') + '</td><td><div class="cell-title">' + esc(firstTitle(o)) + '</div></td><td class="num">' + inrOr(o, paidOf(o)) + '</td><td class="num cell-strong">' + (o.rev && !o.rev.pending ? cur(o.rev.net) : '-') + '</td></tr>').join('') +
       '</tbody></table></div>' + (p.orders.length > sample.length ? '<div class="pager">+ ' + int(p.orders.length - sample.length) + ' more orders</div>' : '') + '</div>' +
-      '<div class="row mt-lg" style="justify-content:flex-end"><button class="btn" id="impCancel">Cancel</button><button class="btn btn-primary btn-lg" id="impSave">' + ico('check') + 'Save ' + int(p.orders.length) + ' orders</button></div>' +
+      stmtHtml +
+      '<div class="row mt-lg" style="justify-content:flex-end"><button class="btn" id="impCancel">Cancel</button><button class="btn btn-primary btn-lg" id="impSave">' + ico('check') + saveLabel + '</button></div>' +
       '</div>';
     hydrateIcons(box);
     box.querySelector('#impCancel').addEventListener('click', () => { u.parsed = null; uploadOrders(box); });
     box.querySelector('#impSave').addEventListener('click', async e => {
       e.target.disabled = true; e.target.textContent = 'Saving...';
-      let res;
-      try { res = await saveImport(u.shop, p.orders); } catch (err) { e.target.disabled = false; e.target.textContent = 'Try again'; return toast(err.message, 'err'); }
+      let res = null, sres = null;
+      try {
+        if (hasOrders) res = await saveImport(u.shop, p.orders);
+        if (stmts.length) sres = await applyStatements(u.shop, stmts);
+      } catch (err) { e.target.disabled = false; e.target.textContent = 'Try again'; return toast(err.message, 'err'); }
       u.parsed = null; const savedShop = u.shop; u.shop = null;
-      box.innerHTML = '<div class="card"><div class="empty"><div class="e-icon" style="background:var(--green-bg);color:var(--green)">' + ico('check') + '</div><h2>Saved ' + int(res.total) + ' orders</h2>' +
-        '<p>' + int(res.added) + ' new and ' + int(res.updated) + ' updated in ' + esc(savedShop) + '. Your notes and PDFs are kept.</p>' +
+      const sMsg = sres ? 'Statement: ' + int(sres.added) + ' new lines' + (sres.dup ? ', ' + int(sres.dup) + ' already saved' : '') + '. ' + int(sres.actual) + (sres.actual === 1 ? ' order now uses' : ' orders now use') + ' exact Etsy numbers' + (sres.waiting ? ', ' + int(sres.waiting) + (sres.waiting === 1 ? ' order' : ' orders') + ' waiting for their orders file' : '') + '.' : '';
+      box.innerHTML = '<div class="card"><div class="empty"><div class="e-icon" style="background:var(--green-bg);color:var(--green)">' + ico('check') + '</div><h2>' + (res ? 'Saved ' + int(res.total) + ' orders' : 'Statement saved') + '</h2>' +
+        (res ? '<p>' + int(res.added) + ' new and ' + int(res.updated) + ' updated in ' + esc(savedShop) + '. Your notes and PDFs are kept.</p>' : '') + (sMsg ? '<p>' + esc(sMsg) + '</p>' : '') +
         '<div class="row" style="justify-content:center"><button class="btn" id="upMore">Upload another file</button><button class="btn" id="upPdfs">' + ico('file') + 'Add reading PDFs</button><a class="btn btn-primary" href="#/dashboard">See dashboard</a></div></div></div>';
       hydrateIcons(box);
       box.querySelector('#upMore').addEventListener('click', () => uploadOrders(box));
@@ -663,10 +723,78 @@
         out.push(clean); added++;
       }
     });
+    const pend = Object.assign({}, S.stmtPending || {}); let pendUsed = false;
+    out.forEach(m => {
+      const pl = pend[m.orderId]; if (!pl) return;
+      const have = new Set(((m.stmt && m.stmt.lines) || []).map(l => l.k));
+      m.stmt = { fx: m.stmt && m.stmt.fx, lines: ((m.stmt && m.stmt.lines) || []).concat(pl.filter(l => !have.has(l.k))) };
+      delete pend[m.orderId]; pendUsed = true;
+    });
+    if (pendUsed) await DB.setMeta('stmtPending', pend);
     await DB.putOrders(out);
     await DB.flush();
     await load();
     return { added, updated, total: out.length };
+  }
+
+  // ---------- monthly statements ----------
+  function knownStmtKeys() {
+    const k = new Set();
+    S.orders.forEach(o => ((o.stmt && o.stmt.lines) || []).forEach(l => k.add(l.k)));
+    Object.values(S.stmtPending || {}).forEach(ls => ls.forEach(l => k.add(l.k)));
+    Object.values(S.statements || {}).forEach(r => (r.otherKeys || []).forEach(x => k.add(x)));
+    return k;
+  }
+  function previewStatements(shop, stmts, incoming) {
+    const known = knownStmtKeys();
+    const ids = new Set(S.orders.map(o => o.orderId).concat((incoming || []).map(o => o.orderId)));
+    return stmts.map(st => {
+      let newCount = 0, dupCount = 0;
+      st.lines.forEach(l => { if (known.has(l.k)) dupCount++; else { known.add(l.k); newCount++; } });
+      const matched = st.orderIds.filter(id => ids.has(id)).length;
+      return { period: st.period, currency: st.currency, total: st.lines.length, newCount, dupCount, matched, unmatched: st.orderIds.length - matched, already: !!(S.statements || {})[shop + '|' + (st.period || 'unknown')] };
+    });
+  }
+  async function applyStatements(shop, stmts) {
+    const known = knownStmtKeys();
+    const pend = JSON.parse(JSON.stringify(S.stmtPending || {}));
+    const recs = JSON.parse(JSON.stringify(S.statements || {}));
+    const byId = new Map(); S.orders.forEach(o => { if (!byId.has(o.orderId) || o.shop === shop) byId.set(o.orderId, o); });
+    const changed = new Map(); let added = 0, dup = 0; const waitIds = new Set();
+    stmts.forEach(st => {
+      const id = shop + '|' + (st.period || 'unknown');
+      const rec = recs[id] = Object.assign({ id, shop, period: st.period, currency: st.currency, files: [], lines: 0, orders: [], otherKeys: [], otherNet: 0 }, recs[id]);
+      if (rec.files.indexOf(st.file) < 0) rec.files.push(st.file);
+      rec.importedAt = Date.now();
+      st.lines.forEach(l => {
+        if (known.has(l.k)) { dup++; return; }
+        known.add(l.k); added++; rec.lines++;
+        const line = { k: l.k, date: l.date, type: l.type, title: l.title, currency: l.currency, amount: l.amount, fees: l.fees, net: l.net, cat: l.cat };
+        if (!l.orderId) { rec.otherKeys.push(l.k); rec.otherNet = Math.round((rec.otherNet + l.net) * 100) / 100; return; }
+        if (rec.orders.indexOf(l.orderId) < 0) rec.orders.push(l.orderId);
+        const o = byId.get(l.orderId);
+        if (!o) { (pend[l.orderId] = pend[l.orderId] || []).push(line); waitIds.add(l.orderId); return; }
+        let c = changed.get(o.key);
+        if (!c) { c = stripRev(o); c.stmt = { fx: o.stmt && o.stmt.fx, lines: ((o.stmt && o.stmt.lines) || []).slice() }; changed.set(o.key, c); }
+        c.stmt.lines.push(line);
+      });
+    });
+    const list = [...changed.values()];
+    try { await Revenue.ensureFx(list); } catch (e) { console.warn(e); }
+    if (list.length) await DB.putOrders(list);
+    await DB.setMeta('statements', recs);
+    await DB.setMeta('stmtPending', pend);
+    await DB.flush();
+    await load();
+    const actual = list.filter(c => Revenue.hasActual(c)).length;
+    return { added, dup, actual, waiting: waitIds.size };
+  }
+  function statementsTable() {
+    const recs = Object.values(S.statements || {}).sort((a, b) => (b.period || '').localeCompare(a.period || '') || a.shop.localeCompare(b.shop));
+    if (!recs.length) return '<div class="muted small">No monthly statement uploaded yet.</div>';
+    return '<div class="table-wrap"><table class="table"><thead><tr><th>Month</th><th>Shop</th><th class="num">Lines</th><th class="num">Orders</th><th>Uploaded</th></tr></thead><tbody>' +
+      recs.map(r => '<tr><td class="cell-strong">' + esc(r.period ? monthLabel(r.period) : 'Unknown') + '</td><td><span class="row" style="gap:6px">' + shopDot(r.shop) + esc(r.shop) + '</span></td><td class="num">' + int(r.lines) + '</td><td class="num">' + int((r.orders || []).length) + '</td><td class="muted">' + (r.importedAt ? date(new Date(r.importedAt).toISOString().slice(0, 10)) : '-') + '</td></tr>').join('') +
+      '</tbody></table></div>';
   }
 
   // ---------- PDF bulk upload ----------
@@ -758,15 +886,17 @@
           '<div class="help mt small">The backup file has orders, notes and the PDF list. The PDF files themselves stay in the GitHub repo (pdfs folder). Last backup: ' + (S.lastBackup ? date(new Date(S.lastBackup).toISOString().slice(0, 10)) : 'never') + '</div>' +
         '</div></div>' +
       '</div>' +
-      '<div class="card mt"><div class="card-head"><div><h3>Revenue rules (Etsy fees)</h3><div class="sub">Net revenue = (items - discount + postage) in ₹ - transaction fee - payment processing. Tax paid by buyer is not counted.</div></div></div><div class="card-body">' +
+      '<div class="card mt"><div class="card-head"><div><h3>Revenue rules (Etsy fees)</h3><div class="sub">Used for orders without a monthly statement ("Estimated"). Net revenue = (items - discount + postage) in ₹ - transaction fee - payment processing - regulatory fee. Tax paid by buyer is not counted. Orders with a statement use Etsy\'s exact numbers.</div></div></div><div class="card-body">' +
         '<div class="grid three">' +
           feeInput('transactionPct', 'Transaction fee %', 'Of order total without tax, incl. postage') +
           feeInput('domesticPct', 'Processing % - India buyers', '') + feeInput('domesticFixed', 'Processing fixed ₹ - India buyers', '') +
           feeInput('internationalPct', 'Processing % - other countries', '') + feeInput('internationalFixed', 'Processing fixed ₹ - other countries', '') +
+          feeInput('regulatoryPct', 'Regulatory operating fee %', 'Of order total without tax. Etsy adds it on some orders (e.g. $0.01). 0 = not counted') +
           '<div><label class="label">Your country</label><input class="input" data-fee="homeCountry" style="width:100%" value="' + esc(S.fees.homeCountry) + '"><div class="help small" style="margin-top:4px">Buyers from here are "domestic"</div></div>' +
         '</div>' +
         '<div class="row mt-lg wrap"><button class="btn btn-primary" id="feeSave">Save rules</button><button class="btn" id="feeReset">Use Etsy default</button><span class="help small">Money in other currencies is changed to ₹ with the ECB exchange rate of the order date.</span></div>' +
       '</div></div>' +
+      '<div class="card mt"><div class="card-head"><div><h3>Monthly statements uploaded</h3><div class="sub">One per shop per month. Upload them on the Upload page.</div></div></div><div class="card-body">' + statementsTable() + '</div></div>' +
       '<div class="grid half mt">' +
         '<div class="card"><div class="card-head"><h3>Shops</h3></div><div class="card-body"><ul class="rank-list">' +
           S.shops.map(s => '<li><div class="rank-main row" style="gap:8px">' + shopDot(s) + esc(s) + '</div><div class="rank-sub">' + int(S.orders.filter(o => o.shop === s).length) + ' orders</div></li>').join('') +
@@ -800,7 +930,7 @@
     });
     v.querySelector('#wipe').addEventListener('click', async () => {
       if (!await confirmBox({ title: 'Delete all orders?', text: 'All orders and notes will be removed for every computer.', ok: 'Delete', danger: true, typeWord: 'DELETE' })) return;
-      try { await DB.clearAll(); } catch (e) { return toast(e.message, 'err'); }
+      try { await DB.clearAll(); await DB.setMeta('statements', {}); await DB.setMeta('stmtPending', {}); await DB.flush(); } catch (e) { return toast(e.message, 'err'); }
       await load(); toast('All orders deleted'); viewSettings(v);
     });
   }
