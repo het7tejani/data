@@ -178,7 +178,7 @@
       let items=itemsOf(current.text);
       if(last) {
         const closing=splitFinal(current.text,data.reader);
-        if(closing.sign){items=itemsOf(closing.body);items.push({lines:[closing.sign],font:'tiro',size:11.6,color:COLOR.body,center:true,lh:16.5});items.push({lines:[closing.name],font:'tibi',size:13.3,color:COLOR.hi,center:true,lh:18.5});}
+        if(closing.sign){items=itemsOf(closing.body);items.push({lines:[closing.sign],font:'tiro',size:11.6,color:COLOR.body,center:true,lh:16.5});items.push({lines:[closing.name],font:'tibo',size:13.3,color:COLOR.body,center:true,lh:18.5});}
         items.push({lines:wrap(closing.disclaimer.replace(/\s+/g,' '),'tiro',11.3),font:'tiro',size:11.3,color:COLOR.body,center:true,lh:16});
       }
       p=newPage();section(p,current.name,items,67,16.5,116);
