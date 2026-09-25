@@ -129,7 +129,7 @@
   }
 
   // ---------- router ----------
-  const TITLES = { dashboard: 'Dashboard', orders: 'Orders', clients: 'Clients', upload: 'Upload', chat: 'Chat & Files', settings: 'Backup & Settings' };
+  const TITLES = { dashboard: 'Dashboard', orders: 'Orders', clients: 'Clients', upload: 'Upload', chat: 'Chat & Files', reading: 'Reading PDF', settings: 'Backup & Settings' };
   function route() {
     if (chatTimer) { clearInterval(chatTimer); chatTimer = null; }
     const r = (location.hash.replace(/^#\/?/, '').split('?')[0]) || 'dashboard';
@@ -139,7 +139,7 @@
     document.getElementById('sidebar').classList.remove('open');
     drawer.close();
     const view = document.getElementById('view');
-    ({ dashboard: viewDashboard, orders: viewOrders, clients: viewClients, upload: viewUpload, chat: viewChat, settings: viewSettings })[name](view);
+    ({ dashboard: viewDashboard, orders: viewOrders, clients: viewClients, upload: viewUpload, chat: viewChat, reading: viewReading, settings: viewSettings })[name](view);
     window.scrollTo(0, 0);
   }
 
@@ -203,6 +203,24 @@
   async function chatRefreshAfterSend() {
     try { const { messages } = await Chat.read(); chatRender(messages); const el = document.getElementById('chatStatus'); if (el) { el.textContent = 'Sent'; el.classList.remove('chat-error'); } }
     catch (e) { chatError('Sent, but could not refresh: ' + e.message); }
+  }
+
+  // ---------- reading PDF (entirely local, no GitHub token or server) ----------
+  function viewReading(v) {
+    v.innerHTML = '<div class="card reading-card"><div class="card-head"><div><h3>Reading PDF</h3><div class="sub">Paste a finished reading. The PDF is built here on your device and downloads straight away.</div></div></div>' +
+      '<div class="card-body"><label class="label" for="readingSource">Reading text</label><textarea id="readingSource" class="input reading-source" placeholder="Reading title\nSubtitle\n\nReader: Daisy Hayes\nClient: Customer Name\n\nPAGE 1: HEADING\n\nYour reading text..."></textarea>' +
+      '<div class="row between wrap mt" style="gap:12px"><span class="muted small">Use PAGE 1: or PAGE 1 — headings. Client: is needed for the filename. Nothing is uploaded.</span><button class="btn btn-primary" id="readingMake">' + ico('download') + 'Make PDF</button></div>' +
+      '<div id="readingStatus" class="help" role="status" style="margin-top:12px"></div></div></div>';
+    const input=v.querySelector('#readingSource'), button=v.querySelector('#readingMake'), status=v.querySelector('#readingStatus');
+    input.value=sessionStorage.getItem('ob_reading_draft') || '';
+    input.oninput=()=>{try{sessionStorage.setItem('ob_reading_draft',input.value);}catch(e){/* device storage optional */}};
+    button.onclick=async()=>{
+      if(!input.value.trim()){status.textContent='Paste the reading first.';return;}
+      button.disabled=true;status.textContent='Building PDF on this device...';
+      try{const pdf=await ReadingPDF.generate(input.value,(n,total)=>{status.textContent='Building page '+n+' of '+total+'...';});ReadingPDF.download(pdf);status.textContent='Downloaded '+pdf.filename+' ('+pdf.pages+' pages).';}
+      catch(e){status.textContent='Could not make PDF: '+e.message;}
+      finally{button.disabled=false;}
+    };
   }
 
   // ---------- filters ----------
@@ -1217,13 +1235,13 @@
         setTimeout(() => { const i = document.getElementById('ordSearch'); if (i) i.value = gs.value; }, 0);
       }, 250);
     });
-    window.addEventListener('hashchange', () => { if (started) route(); });
+    window.addEventListener('hashchange', () => { if (started) route(); else if (location.hash === '#/reading') { started = true; route(); } });
     document.addEventListener('click', e => {
       const a = e.target.closest('a[href^="#/"]');
       if (started && a && a.getAttribute('href') === location.hash) { e.preventDefault(); if (/upload/.test(location.hash)) { S.up.parsed = null; } route(); }
     });
     renderSidebarFoot();
-    if (!DB.configured()) { viewSetup(document.getElementById('view'), ''); return; }
+    if (!DB.configured()) { if (location.hash === '#/reading') { started = true; route(); } else viewSetup(document.getElementById('view'), ''); return; }
     await start();
   }
   window.OrderBook = { S, load, saveImport, matchPdf };
