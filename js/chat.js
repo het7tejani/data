@@ -4,6 +4,7 @@
   const THREAD = 'chat/messages.json';
   const MAX_FILE = 5 * 1024 * 1024;
   const MAX_THREAD = 900 * 1024; // GitHub's Contents API stops returning inline content above 1 MB.
+  const TTL = 24 * 60 * 60 * 1000;
   const client = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
   const text = s => new TextEncoder().encode(s);
   const encode = bytes => {
@@ -31,14 +32,77 @@
     }
     return response;
   }
-  async function read() {
+  function isFresh(m, now = Date.now()) {
+    const at = Date.parse(m.at);
+    return Number.isFinite(at) && at <= now && now - at < TTL;
+  }
+  function normalize(data) {
+    const parsed = JSON.parse(decode(data.content));
+    const messages = Array.isArray(parsed) ? parsed : parsed.messages;
+    if (!Array.isArray(messages)) throw new Error('Chat data is not a message list. No messages were changed.');
+    return { sha: data.sha, messages, pendingDeletes: Array.isArray(parsed.pendingDeletes) ? parsed.pendingDeletes : [] };
+  }
+  async function snapshot() {
     const response = await request(THREAD, { allowMissing: true });
-    if (!response) return { sha: null, messages: [] };
+    if (!response) return { sha: null, messages: [], pendingDeletes: [] };
     const data = await response.json();
     if (!data.content || data.encoding !== 'base64') throw new Error('Chat is too large for GitHub. No messages were changed.');
-    const messages = JSON.parse(decode(data.content));
-    if (!Array.isArray(messages)) throw new Error('Chat file is not a message list. No messages were changed.');
-    return { sha: data.sha, messages };
+    return normalize(data);
+  }
+  const validPath = path => /^chat\/files\/[a-z0-9-]+\.(pdf|txt)$/.test(path || '');
+  const payload = doc => text(JSON.stringify({ messages: doc.messages, pendingDeletes: doc.pendingDeletes }));
+  async function saveThread(doc, message) {
+    const data = payload(doc);
+    if (data.length > MAX_THREAD) throw new Error('Chat is full. No messages were changed.');
+    return write(THREAD, data, message, doc.sha);
+  }
+  // An attachment stays in the pendingDeletes queue until its GitHub path is confirmed deleted.
+  // Git history can still retain its bytes; this removes only current-branch access.
+  async function prune() {
+    let doc;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      doc = await snapshot();
+      const expired = doc.messages.filter(m => !isFresh(m));
+      if (!expired.length) break;
+      doc.messages = doc.messages.filter(m => isFresh(m));
+      doc.pendingDeletes = [...new Set([...doc.pendingDeletes, ...expired.map(m => m.file && m.file.path).filter(validPath)])];
+      try { doc.sha = await saveThread(doc, 'Expire chat entries older than 24h'); break; }
+      catch (e) {
+        if (!/GitHub (409|422)\b/.test(e.message) || attempt === 5) throw e;
+        await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
+      }
+    }
+    if (!doc.pendingDeletes.length) return { messages: doc.messages.filter(m => isFresh(m)), pending: 0 };
+    const removed = [];
+    const stillUsed = new Set(doc.messages.filter(m => isFresh(m)).map(m => m.file && m.file.path).filter(validPath));
+    for (const path of doc.pendingDeletes) {
+      if (stillUsed.has(path)) { removed.push(path); continue; }
+      if (!validPath(path)) continue; // never delete an arbitrary path from untrusted chat data
+      try {
+        const meta = await request(path, { allowMissing: true });
+        if (meta) {
+          const { sha } = await meta.json();
+          await request(path, { method: 'DELETE', body: JSON.stringify({ message: 'Expire chat attachment', sha, branch: 'main' }) });
+        }
+        removed.push(path);
+      } catch (e) { /* retain for the next refresh */ }
+    }
+    if (removed.length) {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const latest = await snapshot();
+        const remaining = latest.pendingDeletes.filter(p => !removed.includes(p));
+        if (remaining.length === latest.pendingDeletes.length) break;
+        latest.pendingDeletes = remaining;
+        try { await saveThread(latest, 'Finish expired attachment cleanup'); break; }
+        catch (e) {
+          if (!/GitHub (409|422)\b/.test(e.message) || attempt === 5) throw e;
+        }
+      }
+    }
+    return { messages: doc.messages.filter(m => isFresh(m)), pending: doc.pendingDeletes.length - removed.length };
+  }
+  async function read() {
+    return prune();
   }
   async function write(path, data, message, sha) {
     const body = { message, content: encode(data), branch: 'main' };
@@ -68,12 +132,12 @@
     validate(file);
     if (file) { if (onStep) onStep('Uploading file...'); message.file = await upload(file); }
     if (onStep) onStep('Sending...');
+    await prune();
     for (let attempt = 0; attempt < 6; attempt++) {
-      const { sha, messages } = await read();
-      if (messages.some(m => m.id === message.id)) return message;
-      const next = [...messages, message];
-      if (text(JSON.stringify(next)).length > MAX_THREAD) throw new Error('Chat is full. The file was uploaded, but the message was not sent.');
-      try { await write(THREAD, text(JSON.stringify(next)), 'Chat message', sha); return message; }
+      const doc = await snapshot();
+      if (doc.messages.some(m => m.id === message.id)) return message;
+      doc.messages = [...doc.messages.filter(m => isFresh(m)), message];
+      try { await saveThread(doc, 'Chat message'); return message; }
       catch (e) {
         if (!/GitHub (409|422)\b/.test(e.message) || attempt === 5) throw e;
         await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
@@ -81,7 +145,7 @@
     }
   }
   async function download(file) {
-    if (!file || !/^chat\/files\/[a-z0-9-]+\.(pdf|txt)$/.test(file.path)) throw new Error('Invalid attachment path.');
+    if (!file || !validPath(file.path)) throw new Error('Invalid attachment path.');
     const response = await request(file.path, { headers: { Accept: 'application/vnd.github.raw' } });
     const blob = new Blob([await response.arrayBuffer()], { type: file.type === 'application/pdf' ? 'application/pdf' : 'text/plain' });
     const url = URL.createObjectURL(blob), a = document.createElement('a');
