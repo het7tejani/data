@@ -125,7 +125,7 @@
       if(total()>765){let over=total()-765;if(gaps.length){const shrink=Math.min(over/gaps.length,10);gaps.forEach((_,i)=>gaps[i]-=shrink);}
         if(total()>765){const scale=Math.max(.90,(765-start-gaps.reduce((a,b)=>a+b,0))/Math.max(items.reduce((n,it)=>n+blockH(it),0),1));items.forEach(it=>it.lh*=scale);}
       }
-      if(total()>765)throw Error('Section "'+name+'" overflows the page. Shorten it or split it into two PAGE sections.');
+      if(total()>765.5)throw Error('Section \"'+name+'\" exceeds the page even after compression. Split it into two PAGE sections.');
       heads.forEach((ln,i)=>centered(page,ln,hy+i*(size+4),'tibo',size,COLOR.head));
       let y=start;
       items.forEach((it,i)=>{y+=it.size*.8;it.lines.forEach((ln,j)=>{if(it.center)centered(page,ln,y,it.font,it.size,it.color);else line(page,ln,LEFT,y,it.font,it.size,it.color);if(j<it.lines.length-1)y+=it.lh;});if(i<items.length-1)y+=gaps[i]+4;});
