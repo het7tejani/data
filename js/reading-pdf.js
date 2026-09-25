@@ -97,6 +97,15 @@
       });
     }
     function centered(page,ln,y,kind,size,color) {line(page,ln,Math.max(LEFT,(PW-measure(ln,kind,size))/2),y,kind,size,color);}
+    function justified(page,ln,y,kind,size,color) {
+      const words=ln.trim().split(/\s+/).filter(Boolean);
+      if(words.length<2) {line(page,ln,LEFT,y,kind,size,color);return;}
+      const widths=words.map(w=>measure(w,kind,size));
+      const gap=(WIDTH-widths.reduce((a,b)=>a+b,0))/(words.length-1);
+      let x=LEFT;
+      words.forEach((word,i)=>{line(page,word,x,y,kind,size,color);x+=widths[i]+gap;});
+    }
+
     function itemsOf(src) {
       const items=[];
       for (let par of src.split(/\n\s*\n/)) {
@@ -142,7 +151,16 @@
       if(m.bottom>750.5)throw Error('Section "'+name+'" exceeds the page. Split it into two PAGE sections.');
       m.heads.forEach((ln,i)=>centered(page,ln,m.hy+i*(size+4),'tibo',size,COLOR.head));
       let y=m.start;
-      items.forEach((it,i)=>{y+=it.size*.8;it.lines.forEach((ln,j)=>{if(it.center)centered(page,ln,y,it.font,it.size,it.color);else line(page,ln,LEFT,y,it.font,it.size,it.color);if(j<it.lines.length-1)y+=it.lh;});if(i<items.length-1)y+=m.gap;});
+      items.forEach((it,i)=>{
+        y+=it.size*.8;
+        it.lines.forEach((ln,j)=>{
+          if(it.center) centered(page,ln,y,it.font,it.size,it.color);
+          else if(j<it.lines.length-1) justified(page,ln,y,it.font,it.size,it.color);
+          else line(page,ln,LEFT,y,it.font,it.size,it.color);
+          if(j<it.lines.length-1)y+=it.lh;
+        });
+        if(i<items.length-1)y+=m.gap;
+      });
     }
     const plans=data.sections.map((current,i)=>{
       const last=i===data.sections.length-1;
@@ -177,7 +195,7 @@
     // Slight safety margin for PDF font/subsetting and floating point rounding.
     const readingScale=Math.max(.55,lo-.002);
     let p=newPage();centered(p,data.title.toUpperCase(),104,'tibo',21,COLOR.head);
-    let y=133;wrap(data.subtitle,'tiro',12.3).forEach(ln=>{centered(p,ln,y,'tiro',12.3,COLOR.body);y+=17;});
+    let y=133;wrap(data.subtitle,'tiit',12.3).forEach(ln=>{centered(p,ln,y,'tiit',12.3,COLOR.hi);y+=17;});
     if(data.premium){centered(p,data.premium,y+2,'tiro',11,COLOR.body);y+=20;}
     y=165;
     for(const [key,value] of data.meta) {
