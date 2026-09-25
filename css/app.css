@@ -380,3 +380,8 @@ textarea.notes { width: 100%; min-height: 110px; padding: 10px 12px; border: 1px
   .chat-hint { font-size: 10px; }
   .tabbar a { font-size: 10px; }
 }
+/* Client-side reading generator */
+.reading-card { max-width: 920px; }
+.reading-source { display: block; width: 100%; min-height: min(65vh, 600px); resize: vertical; margin-top: 8px; padding: 14px; line-height: 1.55; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+@media (max-width: 640px) { .reading-source { min-height: 58vh; } .reading-card .card-body { padding: 14px; } .reading-card #readingMake { width: 100%; justify-content: center; } }
+@media (max-width: 820px) { .tabbar a { font-size: 10px; min-width: 0; } .tabbar a span:last-child { white-space: nowrap; } }
