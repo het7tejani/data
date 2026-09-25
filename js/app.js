@@ -154,6 +154,7 @@
     if (!list) return;
     const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 90;
     const oldIds = chatMessages.map(m => m.id).join('|');
+    messages = messages.filter(m => { const t = Date.parse(m.at); return Number.isFinite(t) && t <= Date.now() && Date.now() - t < 24 * 60 * 60 * 1000; });
     chatMessages = messages.slice();
     if (oldIds === messages.map(m => m.id).join('|') && list.dataset.rendered) return;
     list.dataset.rendered = '1';
@@ -177,8 +178,8 @@
   }
   function viewChat(v) {
     clearInterval(chatTimer);
-    v.innerHTML = '<div class="chat-page card"><div class="chat-header"><div><h2>Chat &amp; Files</h2><p>Messages and files are shared between devices connected to the same private data repo.</p></div><button type="button" class="btn btn-sm" id="chatRefresh">' + ico('repeat') + 'Refresh</button></div>' +
-      '<div class="chat-list" id="chatList" role="log" aria-label="Messages"></div><div class="chat-footer"><div class="chat-selected" id="chatSelected"></div><form id="chatForm"><label class="chat-attach btn" title="Attach PDF or text file">' + ico('plus') + '<span>File</span><input id="chatFile" type="file" accept=".pdf,.txt,application/pdf,text/plain" hidden></label><textarea id="chatText" rows="2" maxlength="4000" placeholder="Write a message..." aria-label="Message"></textarea><button type="submit" id="chatSend" class="btn btn-primary">Send</button></form><div class="chat-hint">PDF or .txt only, up to 5 MB. Use Refresh for new messages. Auto-checks every hour while this page is open.</div><div class="chat-status" id="chatStatus" role="status">Loading...</div></div></div>';
+    v.innerHTML = '<div class="chat-page card"><div class="chat-header"><div><h2>Chat &amp; Files</h2><p>Messages and files are shared between devices connected to the same private data repo. They expire after 24 hours.</p></div><button type="button" class="btn btn-sm" id="chatRefresh">' + ico('repeat') + 'Refresh</button></div>' +
+      '<div class="chat-list" id="chatList" role="log" aria-label="Messages"></div><div class="chat-footer"><div class="chat-selected" id="chatSelected"></div><form id="chatForm"><label class="chat-attach btn" title="Attach PDF or text file">' + ico('plus') + '<span>File</span><input id="chatFile" type="file" accept=".pdf,.txt,application/pdf,text/plain" hidden></label><textarea id="chatText" rows="2" maxlength="4000" placeholder="Write a message..." aria-label="Message"></textarea><button type="submit" id="chatSend" class="btn btn-primary">Send</button></form><div class="chat-hint">PDF or .txt only, up to 5 MB. Use Refresh for new messages. Auto-checks hourly while open. Expired items clear at the next check.</div><div class="chat-status" id="chatStatus" role="status">Loading...</div></div></div>';
     chatRender(chatMessages);
     chatRefresh();
     chatTimer = setInterval(chatRefresh, 60 * 60 * 1000);
