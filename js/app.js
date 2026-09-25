@@ -129,8 +129,9 @@
   }
 
   // ---------- router ----------
-  const TITLES = { dashboard: 'Dashboard', orders: 'Orders', clients: 'Clients', upload: 'Upload', settings: 'Backup & Settings' };
+  const TITLES = { dashboard: 'Dashboard', orders: 'Orders', clients: 'Clients', upload: 'Upload', chat: 'Chat & Files', settings: 'Backup & Settings' };
   function route() {
+    if (chatTimer) { clearInterval(chatTimer); chatTimer = null; }
     const r = (location.hash.replace(/^#\/?/, '').split('?')[0]) || 'dashboard';
     const name = TITLES[r] ? r : 'dashboard';
     document.querySelectorAll('#nav a, #tabbar a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
@@ -138,8 +139,69 @@
     document.getElementById('sidebar').classList.remove('open');
     drawer.close();
     const view = document.getElementById('view');
-    ({ dashboard: viewDashboard, orders: viewOrders, clients: viewClients, upload: viewUpload, settings: viewSettings })[name](view);
+    ({ dashboard: viewDashboard, orders: viewOrders, clients: viewClients, upload: viewUpload, chat: viewChat, settings: viewSettings })[name](view);
     window.scrollTo(0, 0);
+  }
+
+  // ---------- chat across devices ----------
+  let chatTimer = null, chatBusy = false, chatMessages = [], chatSending = false;
+  function chatError(message) {
+    const el = document.getElementById('chatStatus');
+    if (el) { el.textContent = message; el.classList.add('chat-error'); }
+  }
+  function chatRender(messages) {
+    const list = document.getElementById('chatList');
+    if (!list) return;
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 90;
+    const oldIds = chatMessages.map(m => m.id).join('|');
+    chatMessages = messages.slice();
+    if (oldIds === messages.map(m => m.id).join('|') && list.dataset.rendered) return;
+    list.dataset.rendered = '1';
+    list.innerHTML = messages.length ? messages.map((m, i) => {
+      const file = m.file && m.file.name && m.file.path ? '<button class="chat-attachment" type="button" data-chat-download="' + i + '">' + ico('file') + '<span><strong>' + esc(m.file.name) + '</strong><small>' + bytes(m.file.size || 0) + ' · Download</small></span>' + ico('download') + '</button>' : '';
+      const d = new Date(m.at);
+      return '<div class="chat-message' + (m.from === Chat.client ? ' own' : '') + '"><div class="chat-bubble">' + (m.body ? '<div class="chat-text">' + esc(m.body) + '</div>' : '') + file + '</div><div class="chat-time">' + (Number.isNaN(d.getTime()) ? '' : esc(d.toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }))) + '</div></div>';
+    }).join('') : '<div class="chat-empty">No messages yet. Send a note or a PDF/text file to see it on your other devices.</div>';
+    if (atBottom || !oldIds) list.scrollTop = list.scrollHeight;
+  }
+  async function chatRefresh() {
+    if (chatBusy || chatSending || location.hash.split('?')[0] !== '#/chat' || document.hidden) return;
+    chatBusy = true;
+    try {
+      const { messages } = await Chat.read();
+      chatRender(messages);
+      const el = document.getElementById('chatStatus');
+      if (el) { el.textContent = 'Updated ' + new Date().toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' }); el.classList.remove('chat-error'); }
+    } catch (e) { chatError('Could not refresh. ' + e.message); }
+    finally { chatBusy = false; }
+  }
+  function viewChat(v) {
+    clearInterval(chatTimer);
+    v.innerHTML = '<div class="chat-page card"><div class="chat-header"><div><h2>Chat &amp; Files</h2><p>Messages and files are shared between devices connected to the same private data repo.</p></div><button type="button" class="btn btn-sm" id="chatRefresh">' + ico('repeat') + 'Refresh</button></div>' +
+      '<div class="chat-list" id="chatList" role="log" aria-label="Messages"></div><div class="chat-footer"><div class="chat-selected" id="chatSelected"></div><form id="chatForm"><label class="chat-attach btn" title="Attach PDF or text file">' + ico('plus') + '<span>File</span><input id="chatFile" type="file" accept=".pdf,.txt,application/pdf,text/plain" hidden></label><textarea id="chatText" rows="2" maxlength="4000" placeholder="Write a message..." aria-label="Message"></textarea><button type="submit" id="chatSend" class="btn btn-primary">Send</button></form><div class="chat-hint">PDF or .txt only, up to 5 MB. Updates every 15 seconds while this page is open.</div><div class="chat-status" id="chatStatus" role="status">Loading...</div></div></div>';
+    chatRender(chatMessages);
+    chatRefresh();
+    chatTimer = setInterval(chatRefresh, 15000);
+    v.querySelector('#chatRefresh').onclick = chatRefresh;
+    const form = v.querySelector('#chatForm'), inp = v.querySelector('#chatText'), file = v.querySelector('#chatFile');
+    file.onchange = () => { const sel = v.querySelector('#chatSelected'); if (!file.files.length) { sel.textContent = ''; return; } try { Chat.validate(file.files[0]); sel.innerHTML = esc(file.files[0].name) + ' (' + bytes(file.files[0].size) + ') <button type="button" id="chatRemove">Remove</button>'; sel.querySelector('button').onclick = () => { file.value = ''; sel.textContent = ''; }; } catch (e) { file.value = ''; sel.textContent = ''; chatError(e.message); } };
+    inp.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } };
+    v.querySelector('#chatList').onclick = async e => { const b = e.target.closest('[data-chat-download]'); if (!b) return; const m = chatMessages[+b.dataset.chatDownload]; if (!m || !m.file) return; b.disabled = true; try { await Chat.download(m.file); } catch (err) { chatError('Download failed: ' + err.message); } finally { b.disabled = false; } };
+    form.onsubmit = async e => {
+      e.preventDefault(); if (chatSending) return;
+      const body = inp.value.trim(), picked = file.files[0]; if (!body && !picked) return;
+      chatSending = true; v.querySelector('#chatSend').disabled = true;
+      try {
+        await Chat.send(body, picked, step => { const el = document.getElementById('chatStatus'); if (el) el.textContent = step; });
+        inp.value = ''; file.value = ''; v.querySelector('#chatSelected').textContent = '';
+        chatMessages = []; await chatRefreshAfterSend();
+      } catch (err) { chatError('Not sent: ' + err.message + (picked ? ' If the file uploaded, it may be stored without a message.' : '')); }
+      finally { chatSending = false; const button = document.getElementById('chatSend'); if (button) button.disabled = false; }
+    };
+  }
+  async function chatRefreshAfterSend() {
+    try { const { messages } = await Chat.read(); chatRender(messages); const el = document.getElementById('chatStatus'); if (el) { el.textContent = 'Sent'; el.classList.remove('chat-error'); } }
+    catch (e) { chatError('Sent, but could not refresh: ' + e.message); }
   }
 
   // ---------- filters ----------
