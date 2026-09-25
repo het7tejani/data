@@ -12,7 +12,7 @@
     orders: [], shops: DEFAULT_SHOPS.slice(), currency: 'USD',
     dash: { shop: 'all', period: 'all' },
     list: { shop: 'all', month: 'all', pdf: 'all', q: '', page: 1 },
-    cl: { q: '', sort: 'spent' },
+    cl: { q: '', sort: 'spent', repeatOnly: false },
     up: { tab: 'orders', shop: null, parsed: null, files: [], pdfs: [] },
     statements: {}
   };
@@ -129,17 +129,18 @@
   }
 
   // ---------- router ----------
-  const TITLES = { dashboard: 'Dashboard', orders: 'Orders', clients: 'Clients', upload: 'Upload', chat: 'Chat & Files', reading: 'Reading PDF', settings: 'Backup & Settings' };
+  const TITLES = { dashboard: 'Dashboard', orders: 'Orders', clients: 'Clients', repeat: 'Repeat buyers', upload: 'Upload', chat: 'Chat & Files', reading: 'Reading PDF', templates: 'Templates', settings: 'Backup & Settings' };
   function route() {
     if (chatTimer) { clearInterval(chatTimer); chatTimer = null; }
     const r = (location.hash.replace(/^#\/?/, '').split('?')[0]) || 'dashboard';
     const name = TITLES[r] ? r : 'dashboard';
+    S.cl.repeatOnly = (name === 'repeat');
     document.querySelectorAll('#nav a, #tabbar a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
     document.getElementById('pageTitle').textContent = TITLES[name];
     document.getElementById('sidebar').classList.remove('open');
     drawer.close();
     const view = document.getElementById('view');
-    ({ dashboard: viewDashboard, orders: viewOrders, clients: viewClients, upload: viewUpload, chat: viewChat, reading: viewReading, settings: viewSettings })[name](view);
+    ({ dashboard: viewDashboard, orders: viewOrders, clients: viewClients, repeat: viewClients, upload: viewUpload, chat: viewChat, reading: viewReading, templates: Templates.view, settings: viewSettings })[name](view);
     window.scrollTo(0, 0);
   }
 
@@ -312,7 +313,7 @@
           (topList.map((t, i) => '<li><span class="rank-n">' + (i + 1) + '</span><div class="rank-main"><div class="rank-title" title="' + esc(t) + '">' + esc(t) + '</div><div class="rank-sub">' + [...byList[t].shops].map(esc).join(', ') + '</div></div><div style="text-align:right"><div class="rank-val">' + int(byList[t].n) + ' sold</div><div class="rank-sub">' + cur(byList[t].v) + '</div></div></li>').join('') ||
             '<li class="muted">No listing names yet. Upload the "Order Items" file from Etsy.</li>') +
         '</ul></div></div>' +
-        '<div class="card"><div class="card-head"><h3>Top repeat clients</h3><a class="sub" href="#/clients">See all</a></div><div class="card-body"><ul class="rank-list">' +
+        '<div class="card"><div class="card-head"><h3>Top repeat clients</h3><a class="sub" href="#/repeat">See all</a></div><div class="card-body"><ul class="rank-list">' +
           (topClients.map(c => '<li><div class="rank-main"><div class="rank-title">' + esc(c.name || '-') + '</div><div class="rank-sub">' + [...c.shops].map(esc).join(', ') + '</div></div><div style="text-align:right"><div class="rank-val">' + c.n + ' orders</div><div class="rank-sub">' + cur(c.spent) + '</div></div></li>').join('') ||
             '<li class="muted">No repeat clients yet.</li>') +
         '</ul>' +
@@ -647,12 +648,13 @@
     const f = S.cl;
     v.innerHTML = '<div class="toolbar"><div class="search-wrap">' + ico('search') + '<input id="clSearch" type="search" placeholder="Search client name, phone, country" value="' + esc(f.q) + '"></div>' +
       '<select class="select" id="clSort"><option value="spent">Most spent</option><option value="orders">Most orders</option><option value="recent">Recent first</option><option value="name">Name A-Z</option></select>' +
+      '<button class="chip' + (f.repeatOnly ? ' active' : '') + '" id="clRepeat" title="Show only clients with 2+ orders">' + ico('repeat') + 'Repeat buyers</button>' +
       '<div class="spacer"></div><span class="muted small" id="clCount"></span></div><div class="card" id="clCard"></div>';
     document.getElementById('clSort').value = f.sort;
     const all = buildClients();
     const draw = () => {
       const q = P.norm(f.q);
-      let list = all.filter(c => !q || P.norm([c.name, c.user, c.phone, c.country].join(' ')).indexOf(q) >= 0);
+      let list = all.filter(c => (!f.repeatOnly || c.orders.length > 1) && (!q || P.norm([c.name, c.user, c.phone, c.country].join(' ')).indexOf(q) >= 0));
       const sorters = { spent: (a, b) => b.spent - a.spent, orders: (a, b) => b.orders.length - a.orders.length || b.spent - a.spent, recent: (a, b) => b.last.localeCompare(a.last), name: (a, b) => (a.name || '').localeCompare(b.name || '') };
       list.sort(sorters[f.sort]);
       const rep = all.filter(c => c.orders.length > 1).length;
@@ -669,6 +671,7 @@
     };
     let t; document.getElementById('clSearch').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { f.q = e.target.value; draw(); }, 150); });
     document.getElementById('clSort').addEventListener('change', e => { f.sort = e.target.value; draw(); });
+    document.getElementById('clRepeat').addEventListener('click', () => { f.repeatOnly = !f.repeatOnly; viewClients(v); });
     draw(); hydrateIcons(v);
   }
 
