@@ -126,6 +126,32 @@
           items.push({lines:srcLines.flatMap(l=>wrap(l,'tiit',13.3)),font:'tiit',size:13.3,color:COLOR.hi,center:true,lh:18.5,raw:srcLines,wrapKind:'tiit'});
         }
       }
+      // Each section is a page: choose a genuine takeaway when the input
+      // has no explicitly emphasized line. Do not turn ordinary list labels,
+      // boilerplate or the healthcare disclaimer into decoration.
+      if(items.length && !items.some(it=>it.font==='tiit')) {
+        function score(it) {
+          if(it.font!=='tiro') return -Infinity;
+          const text=(it.raw||[]).join(' ').trim();
+          if(text.length<26 || text.length>170 || /^(?:dear |my dear |with |day \d|week \d|the ritual|what you need|for example|then say|check carefully|this reading is intended|this reading is an intuitive)/i.test(text)) return -Infinity;
+          if(/(?:cannot guarantee|not guaranteed|qualified healthcare|professional|dietitian|sensitive skin|allergies|registered)/i.test(text)) return -Infinity;
+          let n=0;
+          if(/^['"“]/.test(text) && /(?:I |my |love|confidence|body)/i.test(text)) n+=12;
+          if(/(?:important message|important point|important transformation|spiritual message|deeper message|strongest message|the message|the purpose|the goal|the spiritual intention|the symbolic theme|the intuitive message|gentle impression|strongest impression)/i.test(text)) n+=11;
+          if(/^(?:you (?:are|deserve|do not|can)|your (?:life|love life|dream body|beauty|confidence|journey)|one clear step|but slow progress|the spiritual message|focus on consistency)/i.test(text)) n+=8;
+          if(/(?:rather than|not a punishment|not destined|not less|can change|does not need|while|kindness|patience|confidence|self-respect|support)/i.test(text)) n+=3;
+          if(text.length>=45 && text.length<=130)n+=2;
+          if(text.length>140)n-=4;
+          return n;
+        }
+        let best=-1, bestScore=-Infinity;
+        items.forEach((it,i)=>{const value=score(it);if(value>bestScore || (value===bestScore && i>best)){bestScore=value;best=i;}});
+        if(best>=0 && Number.isFinite(bestScore)) {
+          const it=items[best];
+          it.font='tiit';it.size=13.3;it.color=COLOR.hi;it.center=true;it.lh=18.5;it.wrapKind='tiit';
+          it.lines=it.raw.flatMap(t=>wrap(t,'tiit',it.size));
+        }
+      }
       return items;
     }
     const blockH=it=>it.size*.80+(it.lines.length-1)*it.lh;
@@ -148,7 +174,7 @@
     }
     function section(page,name,items,top,size,bodyStart,scale) {
       const m=layout(name,items,top,size,bodyStart,scale);
-      if(m.bottom>750.5)throw Error('Section "'+name+'" exceeds the page. Split it into two PAGE sections.');
+      if(m.bottom>730.5)throw Error('Section "'+name+'" exceeds the page. Split it into two PAGE sections.');
       m.heads.forEach((ln,i)=>centered(page,ln,m.hy+i*(size+4),'tibo',size,COLOR.head));
       let y=m.start;
       items.forEach((it,i)=>{
@@ -184,7 +210,7 @@
     },0);
     const fits=scale=>plans.every((plan,i)=>{
       const cover=i===0;
-      return layout(plan.name,scaledItems(plan.items,scale),cover?coverY+26:67,cover?13.5:16.5,cover?coverY+66:116,scale).bottom<=750;
+      return layout(plan.name,scaledItems(plan.items,scale),cover?coverY+26:67,cover?13.5:16.5,cover?coverY+66:116,scale).bottom<=730;
     });
     let lo=.55,hi=1.0;
     if(!fits(lo))throw Error('A section is too long even at the minimum reading font size. Split it into two PAGE sections.');
