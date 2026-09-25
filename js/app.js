@@ -209,15 +209,29 @@
   function viewReading(v) {
     v.innerHTML = '<div class="card reading-card"><div class="card-head"><div><h3>Reading PDF</h3><div class="sub">Paste a finished reading. The PDF is built here on your device and downloads straight away.</div></div></div>' +
       '<div class="card-body"><label class="label" for="readingSource">Reading text</label><textarea id="readingSource" class="input reading-source" placeholder="Reading title\nSubtitle\n\nReader: Daisy Hayes\nClient: Customer Name\n\nPAGE 1: HEADING\n\nYour reading text..."></textarea>' +
-      '<div class="row between wrap mt" style="gap:12px"><span class="muted small">Use PAGE 1: or PAGE 1 — headings. Client: is needed for the filename. Nothing is uploaded.</span><button class="btn btn-primary" id="readingMake">' + ico('download') + 'Make PDF</button></div>' +
+      '<div class="row between wrap mt" style="gap:12px"><span class="muted small">Use PAGE 1: or PAGE 1 \u2014 headings. Client: is needed for the filename. Nothing is uploaded.</span><button class="btn btn-primary" id="readingMake">' + ico('download') + 'Make PDF</button></div>' +
+      '<div style="margin-top:12px"><label class="label" for="readingName">PDF file name</label><input id="readingName" class="input" spellcheck="false" autocomplete="off" placeholder="Fills in automatically - edit it before making the PDF if you want a different name"></div>' +
       '<div id="readingStatus" class="help" role="status" style="margin-top:12px"></div></div></div>';
-    const input=v.querySelector('#readingSource'), button=v.querySelector('#readingMake'), status=v.querySelector('#readingStatus');
+    const input=v.querySelector('#readingSource'), button=v.querySelector('#readingMake'), status=v.querySelector('#readingStatus'), nameInput=v.querySelector('#readingName');
+    const niceName=s=>(s||'').replace(/[^\p{L}\p{N} _-]/gu,'').replace(/\s+/g,'_').replace(/_+/g,'_').slice(0,70)||'Reading';
+    const suggestedName=()=>{try{const d=ReadingPDF.parse(input.value);const type=(d.meta.find(([k])=>/^Reading Type$/i.test(k))||[])[1];return niceName(d.title.toLowerCase().replace(/\b[a-z]/g,c=>c.toUpperCase()))+'_'+niceName(d.customer)+(type?'_'+niceName(type):'')+'.pdf';}catch(e){return '';}};
+    let nameEdited=false;
+    nameInput.oninput=()=>{nameEdited=true;};
     input.value=sessionStorage.getItem('ob_reading_draft') || '';
-    input.oninput=()=>{try{sessionStorage.setItem('ob_reading_draft',input.value);}catch(e){/* device storage optional */}};
+    input.oninput=()=>{try{sessionStorage.setItem('ob_reading_draft',input.value);}catch(e){/* device storage optional */} if(!nameEdited){const s=suggestedName(); if(s) nameInput.value=s;}};
     button.onclick=async()=>{
       if(!input.value.trim()){status.textContent='Paste the reading first.';return;}
       button.disabled=true;status.textContent='Building PDF on this device...';
-      try{const pdf=await ReadingPDF.generate(input.value,(n,total)=>{status.textContent='Building page '+n+' of '+total+'...';});ReadingPDF.download(pdf);status.textContent='Downloaded '+pdf.filename+' ('+pdf.pages+' pages).';}
+      try{
+        const pdf=await ReadingPDF.generate(input.value,(n,total)=>{status.textContent='Building page '+n+' of '+total+'...';});
+        let name=(nameInput.value||'').trim()||pdf.filename;
+        if(!/\.pdf$/i.test(name)) name=name+'.pdf';
+        nameInput.value=name;
+        ReadingPDF.download({bytes:pdf.bytes,filename:name});
+        input.value='';
+        try{sessionStorage.removeItem('ob_reading_draft');}catch(e){/* device storage optional */}
+        status.textContent='Saved as '+name+' ('+pdf.pages+' pages). The text field is cleared for the next reading.';
+      }
       catch(e){status.textContent='Could not make PDF: '+e.message;}
       finally{button.disabled=false;}
     };
