@@ -94,14 +94,14 @@
       for (let par of src.split(/\n\s*\n/)) {
         par=clean(par);if (!par) continue;
         const tag=par.match(/^<text[^>]*>([\s\S]*?)<\/text>$/i);
-        if(tag) {items.push({lines:wrap(clean(tag[1]).toUpperCase(),'tibo',11.5),font:'tibo',size:11.5,color:COLOR.head,center:true,lh:15});continue;}
+        if(tag) {items.push({lines:wrap(clean(tag[1]).toUpperCase(),'tibo',12),font:'tibo',size:12,color:COLOR.head,center:true,lh:16,raw:[clean(tag[1]).toUpperCase()],wrapKind:'tibo'});continue;}
         par=par.replace(/<text[^>]*>([\s\S]*?)<\/text>/gi,'$1');
         const srcLines=par.split('\n').map(clean).filter(Boolean);
         const body=srcLines.join(' ').replace(/\s+/g,' ');
         if (!/^[“"]/.test(par) && body.length>115) {
-          items.push({lines:wrap(body,'tiro',10.2),font:'tiro',size:10.2,color:COLOR.body,center:false,lh:14});
+          items.push({lines:wrap(body,'tiro',11.6),font:'tiro',size:11.6,color:COLOR.body,center:false,lh:16.5,raw:[body],wrapKind:'tiro'});
         } else {
-          items.push({lines:srcLines.flatMap(l=>wrap(l,'tiit',12)),font:'tiit',size:12,color:COLOR.hi,center:true,lh:16});
+          items.push({lines:srcLines.flatMap(l=>wrap(l,'tiit',13.3)),font:'tiit',size:13.3,color:COLOR.hi,center:true,lh:18.5,raw:srcLines,wrapKind:'tiit'});
         }
       }
       return items;
@@ -110,22 +110,39 @@
     function section(page,name,items,top,size,bodyStart,target=705) {
       const heads=wrap(name.toUpperCase(),'tibo',size), hy=top+size*.8;
       let start=heads.length===1?bodyStart:hy+(heads.length-1)*(size+4)+size+16;
-      const gaps=Array(Math.max(0,items.length-1)).fill(20);
+      // Let the content set the page's rhythm. The old target-filling pass could
+      // double paragraph gaps, then stretch line spacing and float the whole
+      // block down; short sections looked scattered despite empty space below.
+      const gaps=Array(Math.max(0,items.length-1)).fill(16);
+      const naturalHeight=start+items.reduce((n,it)=>n+blockH(it),0)+gaps.reduce((a,b)=>a+b,0);
+      // Enlarge short sections rather than pulling paragraphs apart. Long pages
+      // retain the base sizes so ritual lists and disclaimers stay inside the frame.
+      const growth=naturalHeight<560 ? Math.min(1.28,1+(560-naturalHeight)/600) : 1;
+      if(growth>1) for(const it of items) {
+        if(!it.raw) continue;
+        it.size*=growth;
+        it.lh*=growth;
+        it.lines=it.raw.flatMap(raw=>wrap(raw,it.wrapKind,it.size));
+      }
       const total=()=>start+items.reduce((n,it)=>n+blockH(it),0)+gaps.reduce((a,b)=>a+b,0);
-      let extra=target-total();
-      if(extra>0){
-        if(gaps.length){const add=Math.min(extra/gaps.length,22);gaps.forEach((_,i)=>gaps[i]+=add);extra-=add*gaps.length;}
-        for(const it of items.filter(it=>it.lines.length>1)) {
-          if(extra<=0)break;
-          const take=Math.min(it.lh*.5*(it.lines.length-1),extra);
-          it.lh+=take/(it.lines.length-1);extra-=take;
+      // A little extra breathing room on a short page, never a forced fill.
+      if(total()<540 && gaps.length) {
+        const add=Math.min(5,(540-total())/gaps.length);
+        gaps.forEach((_,i)=>gaps[i]+=add);
+      }
+      if(total()>765) {
+        let over=total()-765;
+        if(gaps.length) {
+          const shrink=Math.min(over/gaps.length,9);
+          gaps.forEach((_,i)=>gaps[i]-=shrink);
         }
-        if(total()<target)start+=(target-total())/2;
+        if(total()>765) {
+          const available=765-start-gaps.reduce((a,b)=>a+b,0);
+          const scale=Math.max(.82,available/Math.max(items.reduce((n,it)=>n+blockH(it),0),1));
+          items.forEach(it=>it.lh*=scale);
+        }
       }
-      if(total()>765){let over=total()-765;if(gaps.length){const shrink=Math.min(over/gaps.length,10);gaps.forEach((_,i)=>gaps[i]-=shrink);}
-        if(total()>765){const scale=Math.max(.90,(765-start-gaps.reduce((a,b)=>a+b,0))/Math.max(items.reduce((n,it)=>n+blockH(it),0),1));items.forEach(it=>it.lh*=scale);}
-      }
-      if(total()>765.5)throw Error('Section \"'+name+'\" exceeds the page even after compression. Split it into two PAGE sections.');
+      if(total()>765.5)throw Error('Section "'+name+'" exceeds the page even after compression. Split it into two PAGE sections.');
       heads.forEach((ln,i)=>centered(page,ln,hy+i*(size+4),'tibo',size,COLOR.head));
       let y=start;
       items.forEach((it,i)=>{y+=it.size*.8;it.lines.forEach((ln,j)=>{if(it.center)centered(page,ln,y,it.font,it.size,it.color);else line(page,ln,LEFT,y,it.font,it.size,it.color);if(j<it.lines.length-1)y+=it.lh;});if(i<items.length-1)y+=gaps[i]+4;});
@@ -148,8 +165,8 @@
       let items=itemsOf(current.text);
       if(last) {
         const closing=splitFinal(current.text,data.reader);
-        if(closing.sign){items=itemsOf(closing.body);items.push({lines:[closing.sign],font:'tiro',size:10.2,color:COLOR.body,center:true,lh:14});items.push({lines:[closing.name],font:'tibi',size:12,color:COLOR.hi,center:true,lh:16});}
-        items.push({lines:wrap(closing.disclaimer.replace(/\s+/g,' '),'tiro',10.3),font:'tiro',size:10.3,color:COLOR.body,center:true,lh:14});
+        if(closing.sign){items=itemsOf(closing.body);items.push({lines:[closing.sign],font:'tiro',size:11.6,color:COLOR.body,center:true,lh:16.5});items.push({lines:[closing.name],font:'tibi',size:13.3,color:COLOR.hi,center:true,lh:18.5});}
+        items.push({lines:wrap(closing.disclaimer.replace(/\s+/g,' '),'tiro',11.3),font:'tiro',size:11.3,color:COLOR.body,center:true,lh:16});
       }
       p=newPage();section(p,current.name,items,67,16.5,116,last?730:705);
     }
