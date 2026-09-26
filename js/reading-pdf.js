@@ -56,7 +56,7 @@
   async function assets() {
     // Fixed Lora v37 files. PDF embeds the font bytes, so output stays stable.
     const urls = {
-      bg:'vendor/reading-bg.jpeg', arrow:'vendor/arrow.ttf',
+      bg:'vendor/reading-bg.jpeg', arrow:'vendor/arrow.ttf', emoji:'vendor/noto-emoji.ttf',
       regular:'https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787weuyJG.ttf',
       bold:'https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787z5vCJG.ttf',
       italic:'https://fonts.gstatic.com/s/lora/v37/0QI8MX1D_JOuMw_hLdO6T2wV9KnW-MoFkqg.ttf',
@@ -75,9 +75,35 @@
     const bg = await pdf.embedJpg(files.bg), arrow = await pdf.embedFont(files.arrow,{subset:true});
     const fonts = {
       tiro:await pdf.embedFont(files.regular,{subset:true}), tibo:await pdf.embedFont(files.bold,{subset:true}),
-      tiit:await pdf.embedFont(files.italic,{subset:true}), tibi:await pdf.embedFont(files.boldItalic,{subset:true}), arrow
+      tiit:await pdf.embedFont(files.italic,{subset:true}), tibi:await pdf.embedFont(files.boldItalic,{subset:true}), arrow,
+      emoji:await pdf.embedFont(files.emoji,{subset:false})
     };
-    const measure = (str,kind,size) => str.split('→').reduce((w,part,i) => w + (i ? fonts.arrow.widthOfTextAtSize('→',size) : 0) + fonts[kind].widthOfTextAtSize(part,size),0);
+    // Lora has no emoji glyphs. Split text into Lora runs and emoji runs and
+    // draw the emoji runs with Noto Emoji, so emoji render without changing
+    // the look of the Lora text around them.
+    const EMOJI_BASE=/[\u{1F000}-\u{1FAFF}\u{2300}-\u{23FF}\u{25A0}-\u{25FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{2B00}-\u{2BFF}\u{3030}\u{303D}\u{3297}\u{3299}\u{00A9}\u{00AE}\u{203C}\u{2049}\u{2122}\u{2139}]/u;
+    function segment(str){
+      const chars=[...str], runs=[];
+      let cur='', isEmoji=false;
+      const push=()=>{if(cur)runs.push({t:cur,emoji:isEmoji});cur='';};
+      for(let i=0;i<chars.length;i++){
+        const ch=chars[i], cp=ch.codePointAt(0);
+        const joiner=cp===0xFE0F||cp===0x200D||cp===0x20E3||(cp>=0xE0020&&cp<=0xE007F);
+        // Keycap sequences: digit / # / * + optional FE0F + combining enclosing keycap.
+        const keycap=/^[0-9#*]$/.test(ch)&&(chars[i+1]==='\u20E3'||(chars[i+1]==='\uFE0F'&&chars[i+2]==='\u20E3'));
+        if(EMOJI_BASE.test(ch)||keycap){
+          if(cur&&!isEmoji)push();
+          isEmoji=true;cur+=ch;continue;
+        }
+        if(joiner&&cur){isEmoji=true;cur+=ch;continue;}
+        if(isEmoji&&cur)push();
+        isEmoji=false;cur+=ch;
+      }
+      push();
+      return runs;
+    }
+    const textWidth=(part,kind,size)=>segment(part).reduce((w,r)=>w+(r.emoji?fonts.emoji:fonts[kind]).widthOfTextAtSize(r.t,size),0);
+    const measure = (str,kind,size) => str.split('→').reduce((w,part,i) => w + (i ? fonts.arrow.widthOfTextAtSize('→',size) : 0) + textWidth(part,kind,size),0);
     const wrap = (str,kind,size,width=WIDTH) => {
       const words = str.trim().split(/\s+/).filter(Boolean), result=[]; let cur='';
       for (const word of words) {
@@ -93,7 +119,12 @@
       let cx=x;
       ln.split('→').forEach((part,i)=> {
         if (i) {page.drawText('→',{x:cx,y:PH-y,size,font:fonts.arrow,color});cx+=measure('→','tiit',size);}
-        if (part) {page.drawText(part,{x:cx,y:PH-y,size,font:fonts[kind],color});cx+=fonts[kind].widthOfTextAtSize(part,size);}
+        segment(part).forEach(r=>{
+          if (!r.t) return;
+          const font=r.emoji?fonts.emoji:fonts[kind];
+          page.drawText(r.t,{x:cx,y:PH-y,size,font,color});
+          cx+=font.widthOfTextAtSize(r.t,size);
+        });
       });
     }
     function centered(page,ln,y,kind,size,color) {line(page,ln,Math.max(LEFT,(PW-measure(ln,kind,size))/2),y,kind,size,color);}
@@ -166,16 +197,18 @@
       });
     }
     function layout(name,items,top,size,bodyStart,scale) {
-      const heads=wrap(name.toUpperCase(),'tibo',size), hy=top+size*.8;
-      const start=heads.length===1?bodyStart:hy+(heads.length-1)*(size+4)+size+16;
+      let hsize=size, heads=wrap(name.toUpperCase(),'tibo',hsize);
+      while(hsize>9 && heads.some(ln=>measure(ln,'tibo',hsize)>WIDTH)){hsize-=0.5;heads=wrap(name.toUpperCase(),'tibo',hsize);}
+      const hy=top+hsize*.8;
+      const start=heads.length===1?bodyStart:hy+(heads.length-1)*(hsize+4)+hsize+16;
       const gap=16*scale;
       const bottom=start+items.reduce((n,it)=>n+blockH(it),0)+Math.max(0,items.length-1)*gap;
-      return {heads,hy,start,gap,bottom};
+      return {heads,hy,start,gap,bottom,hsize};
     }
     function section(page,name,items,top,size,bodyStart,scale) {
       const m=layout(name,items,top,size,bodyStart,scale);
       if(m.bottom>730.5)throw Error('Section "'+name+'" exceeds the page. Split it into two PAGE sections.');
-      m.heads.forEach((ln,i)=>centered(page,ln,m.hy+i*(size+4),'tibo',size,COLOR.head));
+      m.heads.forEach((ln,i)=>centered(page,ln,m.hy+i*(m.hsize+4),'tibo',m.hsize,COLOR.head));
       let y=m.start;
       items.forEach((it,i)=>{
         y+=it.size*.8;
@@ -204,7 +237,16 @@
       return {name:current.name,items};
     });
     if(data.sections.length===1) plans.push({name:'FINAL MESSAGE',items:itemsOf(DISCLAIMER)});
-    const coverY=165+data.meta.reduce((n,[key,value])=>{
+    // Long titles must fit the page width: shrink the title font first, then
+    // wrap onto extra centered lines, and move the rest of the cover down.
+    let titleSize=21;
+    const titleText=data.title.toUpperCase();
+    while(titleSize>13 && measure(titleText,'tibo',titleSize)>WIDTH)titleSize-=0.5;
+    let titleLines=wrap(titleText,'tibo',titleSize);
+    while(titleSize>8 && titleLines.some(ln=>measure(ln,'tibo',titleSize)>WIDTH)){titleSize-=0.5;titleLines=wrap(titleText,'tibo',titleSize);}
+    const titleStep=titleSize+6;
+    const coverTitleDrop=(titleLines.length-1)*titleStep;
+    const coverY=165+coverTitleDrop+data.meta.reduce((n,[key,value])=>{
       const text=value?key+': '+value:key;
       return n+21*(measure(text,'tiro',10.3)>WIDTH?wrap(text,'tiro',10.3).length:1);
     },0);
@@ -220,10 +262,11 @@
     }
     // Slight safety margin for PDF font/subsetting and floating point rounding.
     const readingScale=Math.max(.55,lo-.002);
-    let p=newPage();centered(p,data.title.toUpperCase(),104,'tibo',21,COLOR.head);
-    let y=133;wrap(data.subtitle,'tiit',12.3).forEach(ln=>{centered(p,ln,y,'tiit',12.3,COLOR.hi);y+=17;});
+    let p=newPage();
+    titleLines.forEach((ln,i)=>centered(p,ln,104+i*titleStep,'tibo',titleSize,COLOR.head));
+    let y=133+coverTitleDrop;wrap(data.subtitle,'tiit',12.3).forEach(ln=>{centered(p,ln,y,'tiit',12.3,COLOR.hi);y+=17;});
     if(data.premium){centered(p,data.premium,y+2,'tiro',11,COLOR.body);y+=20;}
-    y=165;
+    y=165+coverTitleDrop;
     for(const [key,value] of data.meta) {
       const ln=value?key+': '+value:key;
       for(const part of wrap(ln,'tiro',10.3)) {centered(p,part,y,'tiro',10.3,COLOR.body);y+=21;}
