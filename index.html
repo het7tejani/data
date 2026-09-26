@@ -27,6 +27,7 @@
       </div>
       <nav class="nav" id="nav">
         <a href="#/dashboard" data-route="dashboard"><span class="ico" data-icon="home"></span>Dashboard</a>
+        <a href="#/sales" data-route="sales"><span class="ico" data-icon="chart"></span>Sales Summary</a>
         <a href="#/orders" data-route="orders"><span class="ico" data-icon="list"></span>Orders</a>
         <a href="#/clients" data-route="clients"><span class="ico" data-icon="users"></span>Clients</a>
         <a href="#/repeat" data-route="repeat"><span class="ico" data-icon="repeat"></span>Repeat buyers</a>
@@ -59,12 +60,17 @@
   <nav class="tabbar" id="tabbar" aria-label="Main">
     <a href="#/dashboard" data-route="dashboard"><span class="ico" data-icon="home"></span><span>Home</span></a>
     <a href="#/orders" data-route="orders"><span class="ico" data-icon="list"></span><span>Orders</span></a>
-    <a href="#/upload" data-route="upload"><span class="ico" data-icon="upload"></span><span>Upload</span></a>
     <a href="#/chat" data-route="chat"><span class="ico" data-icon="chat"></span><span>Chat</span></a>
-    <a href="#/clients" data-route="clients"><span class="ico" data-icon="users"></span><span>Clients</span></a>
-    <a href="#/reading" data-route="reading"><span class="ico" data-icon="file"></span><span>Reading PDF</span></a>
-    <a href="#/templates" data-route="templates"><span class="ico" data-icon="sheet"></span><span>Templates</span></a>
     <a href="#/settings" data-route="settings"><span class="ico" data-icon="settings"></span><span>Settings</span></a>
+    <button type="button" id="moreBtn" aria-label="More pages" aria-expanded="false" aria-controls="moreMenu"><span class="ico" data-icon="more"></span><span>More</span></button>
+  </nav>
+  <nav class="more-menu" id="moreMenu" aria-label="More pages" hidden>
+    <a href="#/sales" data-route="sales"><span class="ico" data-icon="chart"></span>Sales Summary</a>
+    <a href="#/clients" data-route="clients"><span class="ico" data-icon="users"></span>Clients</a>
+    <a href="#/repeat" data-route="repeat"><span class="ico" data-icon="repeat"></span>Repeat buyers</a>
+    <a href="#/upload" data-route="upload"><span class="ico" data-icon="upload"></span>Upload</a>
+    <a href="#/reading" data-route="reading"><span class="ico" data-icon="file"></span>Reading PDF</a>
+    <a href="#/templates" data-route="templates"><span class="ico" data-icon="sheet"></span>Templates</a>
   </nav>
 
   <div class="drawer-backdrop" id="drawerBackdrop"></div>
