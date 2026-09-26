@@ -130,7 +130,7 @@
   }
 
   // ---------- router ----------
-  const TITLES = { dashboard: 'Dashboard', sales: 'Sales Summary', orders: 'Orders', clients: 'Clients', repeat: 'Repeat buyers', upload: 'Upload', chat: 'Chat & Files', reading: 'Reading PDF', templates: 'Templates', settings: 'Backup & Settings' };
+  const TITLES = { dashboard: 'Dashboard', sales: 'Sales Summary', orders: 'Orders', clients: 'Clients', repeat: 'Repeat buyers', upload: 'Upload', chat: 'Chat & Files', reading: 'Reading PDF', settings: 'Backup & Settings' };
   function route() {
     if (chatTimer) { clearInterval(chatTimer); chatTimer = null; }
     const r = (location.hash.replace(/^#\/?/, '').split('?')[0]) || 'dashboard';
@@ -144,7 +144,7 @@
     document.getElementById('sidebar').classList.remove('open');
     drawer.close();
     const view = document.getElementById('view');
-    ({ dashboard: viewDashboard, sales: viewSales, orders: viewOrders, clients: viewClients, repeat: viewClients, upload: viewUpload, chat: viewChat, reading: viewReading, templates: Templates.view, settings: viewSettings })[name](view);
+    ({ dashboard: viewDashboard, sales: viewSales, orders: viewOrders, clients: viewClients, repeat: viewClients, upload: viewUpload, chat: viewChat, reading: viewReading, settings: viewSettings })[name](view);
     window.scrollTo(0, 0);
   }
 
@@ -269,6 +269,31 @@
   function salesWeekLabel(key) {
     return new Date(key + 'T00:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
   }
+  // A checkout is counted once per listing, even if its item rows repeat or quantity is greater than one.
+  // Orders-only CSVs do not contain listing names, so they cannot contribute to this ranking.
+  function bestSellers(orders, start, last) {
+    const byShop = new Map();
+    orders.forEach(o => {
+      const week = salesWeek(o.date);
+      if (!week || week < start || week > last || !o.shop) return;
+      const seen = new Set();
+      (o.items || []).forEach(it => {
+        const title = (it.title || '').trim();
+        const id = String(it.listingId || '').trim();
+        if (!id && (!title || title === '(no title)')) return;
+        const key = id ? 'id:' + id : 'title:' + title.toLocaleLowerCase();
+        let shop = byShop.get(o.shop);
+        if (!shop) { shop = new Map(); byShop.set(o.shop, shop); }
+        let row = shop.get(key);
+        if (!row) { row = { title: title && title !== '(no title)' ? title : 'Listing #' + id, id, n: 0, v: 0, pending: 0 }; shop.set(key, row); }
+        if (title && title !== '(no title)') row.title = title;
+        if (!seen.has(key)) { row.n++; seen.add(key); }
+        if (isPrimary(o)) row.v += itemNet(o, it);
+        else row.pending++;
+      });
+    });
+    return byShop;
+  }
   function viewSales(v) {
     const f = S.sales;
     const dated = S.orders.map(o => ({ o, week: salesWeek(o.date) })).filter(x => x.week);
@@ -295,6 +320,13 @@
       const part = b.shops.get(o.shop) || { n: 0, v: 0 };
       part.n++; part.v += val; b.shops.set(o.shop, part);
     });
+    const best = bestSellers(S.orders, start, last);
+    const bestHtml = shops.map(shop => {
+      const rows = [...(best.get(shop) || new Map()).values()].sort((a, b) => b.n - a.n || b.v - a.v || a.title.localeCompare(b.title));
+      return '<div class="best-shop"><h4>' + shopDot(shop) + esc(shop) + '</h4>' + (rows.length ?
+        '<ol class="best-list">' + rows.map(row => '<li><span class="best-name" title="' + esc(row.title) + '">' + esc(row.title) + '</span><span class="best-figures"><strong>' + int(row.n) + ' ' + (row.n === 1 ? 'order' : 'orders') + '</strong><span class="muted">' + cur(row.v) + (row.pending ? ' · ' + int(row.pending) + ' item(s) awaiting exchange rate' : '') + '</span></span></li>').join('') + '</ol>' :
+        '<p class="muted small">No listing details imported in this period.</p>') + '</div>';
+    }).join('');
     const metric = row => f.metric === 'orders' ? row.n : row.v;
     const fmt = n => f.metric === 'orders' ? int(n) : cur(n);
     const totals = [...shopStats.values()].reduce((a, x) => ({ n: a.n + x.n, v: a.v + x.v, pending: a.pending + x.pending }), { n: 0, v: 0, pending: 0 });
@@ -314,6 +346,7 @@
       '<div class="sales-intro"><p>Compare imported orders across your shops. Figures are based on your latest uploaded data, not live Etsy sales.</p><div class="sales-controls"><div class="seg" id="salesWeeks" aria-label="Time range">' + [12, 26, 52].map(n => '<button type="button" data-weeks="' + n + '" class="' + (f.weeks === n ? 'active' : '') + '">' + n + ' weeks</button>').join('') + '</div><div class="seg" id="salesMetric" aria-label="Chart metric"><button type="button" data-metric="revenue" class="' + (f.metric === 'revenue' ? 'active' : '') + '">Revenue</button><button type="button" data-metric="orders" class="' + (f.metric === 'orders' ? 'active' : '') + '">Orders</button></div></div><div class="muted small">' + esc(salesWeekLabel(start)) + ' - ' + esc(through) + ' · Latest imported order: ' + esc(latestOrder) + '</div></div>' +
       '<div class="grid half mt"><div class="card kpi"><div class="kpi-label">Orders</div><div class="kpi-value">' + int(totals.n) + '</div><div class="kpi-note">One checkout counts as one order</div></div><div class="card kpi"><div class="kpi-label">Net revenue</div><div class="kpi-value">' + cur(totals.v) + '</div><div class="kpi-note">After discount, tax &amp; Etsy fees · ' + (totals.pending ? int(totals.pending) + ' order(s) awaiting exchange rate' : 'All converted to INR') + '</div></div></div>' +
       '<div class="card mt"><div class="card-head"><div><h3>Shop comparison</h3><div class="sub">' + (f.metric === 'orders' ? 'Orders' : 'Net revenue in ₹') + ' · same period for all shops</div></div></div><div class="card-body"><div class="sales-shop-list">' + ranked.map(([shop, row]) => '<div class="sales-shop-row"><div class="sales-shop-top"><span class="sales-shop-name">' + shopDot(shop) + esc(shop) + '</span><strong>' + fmt(metric(row)) + '</strong></div><div class="bar-track"><div class="bar-fill" style="width:' + (Math.max(0, metric(row)) / maxShop * 100).toFixed(2) + '%;background:' + shopColor(shop) + '"></div></div><div class="muted small">' + int(row.n) + ' orders · ' + cur(row.v) + (row.pending ? ' · ' + int(row.pending) + ' awaiting exchange rate' : '') + '</div></div>').join('') + '</div></div></div>' +
+      '<div class="card mt"><div class="card-head"><div><h3>Best sellers</h3><div class="sub">Ranked by checkouts per listing, by shop · selected ' + f.weeks + '-week period</div></div></div><div class="card-body"><p class="muted small">From imported order items, not live Etsy. Revenue is estimated net INR allocated by item value; an orders-only CSV cannot show listings.</p><div class="best-shops">' + bestHtml + '</div></div></div>' +
       '<div class="card mt"><div class="card-head"><div><h3>Weekly sales</h3><div class="sub">Monday - Sunday · ' + (selected ? esc(selected) : 'all shops, stacked by shop') + '</div></div></div><div class="card-body"><label class="label" for="salesShop">Show weekly trend for</label><select id="salesShop" class="select"><option value="all">All shops</option>' + shops.map(s => '<option value="' + esc(s) + '"' + (selected === s ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select><div class="sales-week-list" role="img" aria-label="Weekly ' + (f.metric === 'orders' ? 'order counts' : 'net revenue') + ' from imported orders">' + points.map(({ week, data, display }) => {
         const label = salesWeekLabel(week);
         const parts = selected ? [[selected, display]] : [...data.shops];
@@ -1341,3 +1374,4 @@
   window.OrderBook = { S, load, saveImport, matchPdf };
   boot().catch(e => { console.error(e); document.getElementById('view').innerHTML = '<div class="notice">Something went wrong: ' + esc(e.message) + '</div>'; });
 })();
+
